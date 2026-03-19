@@ -1,0 +1,5 @@
+{
+  "title": "Flash Attention",
+  "text": "We present an IO-aware exact attention algorithm implemented as fused kernels with Triton-like execution patterns.",
+  "codebase_mentions": []
+}

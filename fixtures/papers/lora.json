@@ -1,0 +1,12 @@
+{
+  "title": "LoRA: Low-Rank Adaptation of Large Language Models",
+  "text": "We adapt pretrained Transformers models with trainable low-rank matrices while keeping the backbone frozen.",
+  "codebase_mentions": [
+    {
+      "alias": "transformers",
+      "repo_url": "https://github.com/huggingface/transformers",
+      "confidence": 0.92,
+      "evidence": "The paper and examples refer to Transformers-style fine-tuning."
+    }
+  ]
+}

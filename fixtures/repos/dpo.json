@@ -1,0 +1,14 @@
+{
+  "repo_url": "https://github.com/huggingface/trl",
+  "fork_parent": null,
+  "readme": "This repository contains preference optimization trainers including DPO built within the TRL ecosystem.",
+  "notes": "DPO lives next to existing TRL trainer abstractions.",
+  "explicit_mentions": [
+    {
+      "alias": "trl",
+      "repo_url": "https://github.com/huggingface/trl",
+      "confidence": 0.95,
+      "evidence": "Repository structure and README identify TRL as the surrounding codebase."
+    }
+  ]
+}

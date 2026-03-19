@@ -1,0 +1,12 @@
+{
+  "title": "Direct Preference Optimization",
+  "text": "The training setup follows the TRL ecosystem and replaces RLHF reward modeling with a direct preference objective.",
+  "codebase_mentions": [
+    {
+      "alias": "trl",
+      "repo_url": "https://github.com/huggingface/trl",
+      "confidence": 0.9,
+      "evidence": "The paper describes a trainer flow aligned with TRL preference optimization utilities."
+    }
+  ]
+}

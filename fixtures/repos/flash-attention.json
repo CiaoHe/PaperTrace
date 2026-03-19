@@ -1,0 +1,7 @@
+{
+  "repo_url": "https://github.com/Dao-AILab/flash-attention",
+  "fork_parent": null,
+  "readme": "Flash Attention provides optimized exact attention kernels and Python bindings for large model training.",
+  "notes": "The repository focuses on fused attention kernels and launcher wrappers.",
+  "explicit_mentions": []
+}

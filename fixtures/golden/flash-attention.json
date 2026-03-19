@@ -1,0 +1,46 @@
+{
+  "case_slug": "flash-attention",
+  "summary": "Flash Attention rewrites attention execution for faster and more memory-efficient kernels.",
+  "selected_base_repo": {
+    "repo_url": "https://github.com/openai/triton",
+    "strategy": "code_fingerprint",
+    "confidence": 0.84,
+    "evidence": "Kernel structure and low-level launch patterns closely resemble Triton implementations."
+  },
+  "base_repo_candidates": [
+    {
+      "repo_url": "https://github.com/openai/triton",
+      "strategy": "code_fingerprint",
+      "confidence": 0.84,
+      "evidence": "Kernel structure and low-level launch patterns closely resemble Triton implementations."
+    }
+  ],
+  "contributions": [
+    {
+      "id": "C1",
+      "title": "IO-aware fused attention kernel",
+      "section": "Section 3",
+      "keywords": ["attention", "kernel", "memory"],
+      "impl_hints": ["Fuse attention steps into a tiled kernel to reduce memory traffic."]
+    }
+  ],
+  "diff_clusters": [
+    {
+      "id": "D1",
+      "label": "Fused attention kernel",
+      "change_type": "MODIFIED_CORE",
+      "files": ["flash_attn/flash_attn_interface.py", "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu"],
+      "summary": "Adds fused attention kernels and dispatch wrappers."
+    }
+  ],
+  "mappings": [
+    {
+      "diff_cluster_id": "D1",
+      "contribution_id": "C1",
+      "confidence": 0.89,
+      "evidence": "The fused kernel corresponds to the IO-aware attention implementation in the paper.",
+      "completeness": "partial"
+    }
+  ],
+  "warnings": ["Local MVP does not execute CUDA kernels; results are fixture-backed."]
+}

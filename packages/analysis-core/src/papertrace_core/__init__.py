@@ -1,0 +1,1 @@
+"""PaperTrace core domain package."""

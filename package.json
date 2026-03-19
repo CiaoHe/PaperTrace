@@ -1,0 +1,17 @@
+{
+  "name": "papertrace",
+  "private": true,
+  "packageManager": "pnpm@10.21.0",
+  "scripts": {
+    "contracts:generate": "bash infra/scripts/generate_contracts.sh",
+    "lint:web": "pnpm --filter @papertrace/web lint && pnpm --filter @papertrace/web typecheck",
+    "lint:contracts": "pnpm --filter @papertrace/contracts lint",
+    "playwright:install": "pnpm --filter @papertrace/web exec playwright install"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.2.2",
+    "concurrently": "^9.2.1",
+    "openapi-typescript": "^7.10.1",
+    "wait-on": "^8.0.5"
+  }
+}

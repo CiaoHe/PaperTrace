@@ -1,0 +1,74 @@
+{
+  "case_slug": "lora",
+  "summary": "LoRA adds low-rank adapters on top of transformers-style modules.",
+  "selected_base_repo": {
+    "repo_url": "https://github.com/huggingface/transformers",
+    "strategy": "paper_mention",
+    "confidence": 0.92,
+    "evidence": "Paper and repository both reference the Transformers codebase."
+  },
+  "base_repo_candidates": [
+    {
+      "repo_url": "https://github.com/huggingface/transformers",
+      "strategy": "paper_mention",
+      "confidence": 0.92,
+      "evidence": "Paper and repository both reference the Transformers codebase."
+    },
+    {
+      "repo_url": "https://github.com/microsoft/LoRA",
+      "strategy": "readme_declaration",
+      "confidence": 0.58,
+      "evidence": "Repository examples mention Transformers-specific integration."
+    }
+  ],
+  "contributions": [
+    {
+      "id": "C1",
+      "title": "Low-rank adaptation modules",
+      "section": "Section 3",
+      "keywords": ["lora", "low-rank", "adapter"],
+      "impl_hints": ["Insert trainable rank-decomposition matrices into attention projections."]
+    },
+    {
+      "id": "C2",
+      "title": "Frozen backbone fine-tuning",
+      "section": "Section 4",
+      "keywords": ["freeze", "fine-tuning", "parameter-efficient"],
+      "impl_hints": ["Keep pretrained weights frozen and only optimize LoRA parameters."]
+    }
+  ],
+  "diff_clusters": [
+    {
+      "id": "D1",
+      "label": "LoRA adapter modules",
+      "change_type": "NEW_MODULE",
+      "files": ["peft/tuners/lora/layer.py", "peft/tuners/lora/model.py"],
+      "summary": "Adds reusable low-rank adapter layers and wiring into linear projections."
+    },
+    {
+      "id": "D2",
+      "label": "Training freeze logic",
+      "change_type": "MODIFIED_TRAIN",
+      "files": ["peft/utils/other.py"],
+      "summary": "Restricts optimizer updates to adapter parameters while freezing the base model."
+    }
+  ],
+  "mappings": [
+    {
+      "diff_cluster_id": "D1",
+      "contribution_id": "C1",
+      "confidence": 0.95,
+      "evidence": "The adapter modules implement the rank-decomposition described in the paper.",
+      "completeness": "complete"
+    },
+    {
+      "diff_cluster_id": "D2",
+      "contribution_id": "C2",
+      "confidence": 0.9,
+      "evidence": "The training utilities freeze pretrained weights and keep LoRA weights trainable.",
+      "completeness": "complete"
+    }
+  ],
+  "warnings": []
+}
+

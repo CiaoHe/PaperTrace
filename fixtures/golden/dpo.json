@@ -1,0 +1,47 @@
+{
+  "case_slug": "dpo",
+  "summary": "DPO modifies preference optimization on top of TRL-style training utilities.",
+  "selected_base_repo": {
+    "repo_url": "https://github.com/huggingface/trl",
+    "strategy": "paper_mention",
+    "confidence": 0.9,
+    "evidence": "DPO examples and trainer structure align with the TRL stack."
+  },
+  "base_repo_candidates": [
+    {
+      "repo_url": "https://github.com/huggingface/trl",
+      "strategy": "paper_mention",
+      "confidence": 0.9,
+      "evidence": "DPO examples and trainer structure align with the TRL stack."
+    }
+  ],
+  "contributions": [
+    {
+      "id": "C1",
+      "title": "Direct preference optimization objective",
+      "section": "Section 2",
+      "keywords": ["preference", "objective", "policy"],
+      "impl_hints": ["Replace RLHF reward optimization with a direct preference loss."]
+    }
+  ],
+  "diff_clusters": [
+    {
+      "id": "D1",
+      "label": "DPO trainer objective",
+      "change_type": "MODIFIED_LOSS",
+      "files": ["trl/trainer/dpo_trainer.py"],
+      "summary": "Introduces the preference loss and policy/reference comparison path."
+    }
+  ],
+  "mappings": [
+    {
+      "diff_cluster_id": "D1",
+      "contribution_id": "C1",
+      "confidence": 0.93,
+      "evidence": "The trainer objective computes the preference-aware loss from policy and reference logits.",
+      "completeness": "complete"
+    }
+  ],
+  "warnings": []
+}
+

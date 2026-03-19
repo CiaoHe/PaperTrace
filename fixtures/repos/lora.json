@@ -1,0 +1,14 @@
+{
+  "repo_url": "https://github.com/microsoft/LoRA",
+  "fork_parent": null,
+  "readme": "This repository provides LoRA adapters for Transformer models and examples built on top of the Hugging Face Transformers stack.",
+  "notes": "The training examples wrap Transformer modules with low-rank adapter layers.",
+  "explicit_mentions": [
+    {
+      "alias": "transformers",
+      "repo_url": "https://github.com/huggingface/transformers",
+      "confidence": 0.94,
+      "evidence": "README explicitly says the examples are built on top of Hugging Face Transformers."
+    }
+  ]
+}

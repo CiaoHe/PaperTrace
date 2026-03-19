@@ -1,0 +1,75 @@
+[project]
+name = "papertrace"
+version = "0.1.0"
+description = "PaperTrace local MVP monorepo"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "celery[redis]>=5.4.0,<6.0.0",
+  "fastapi>=0.116.0,<1.0.0",
+  "pydantic>=2.11.0,<3.0.0",
+  "pydantic-settings>=2.10.0,<3.0.0",
+  "psycopg[binary]>=3.2.0,<4.0.0",
+  "python-dotenv>=1.1.0,<2.0.0",
+  "sqlalchemy>=2.0.40,<3.0.0",
+  "uvicorn[standard]>=0.35.0,<1.0.0",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28.0,<1.0.0",
+  "mypy>=1.17.0,<2.0.0",
+  "pytest>=8.4.0,<9.0.0",
+  "pytest-cov>=6.2.0,<7.0.0",
+  "ruff>=0.12.0,<1.0.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+pythonpath = [
+  "apps/api/src",
+  "apps/worker/src",
+  "packages/analysis-core/src",
+]
+testpaths = [
+  "packages/analysis-core/tests",
+  "apps/api/tests",
+  "apps/worker/tests",
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+strict = true
+mypy_path = [
+  "apps/api/src",
+  "apps/worker/src",
+  "packages/analysis-core/src",
+]
+exclude = [
+  "apps/web",
+  "packages/contracts/src/generated.ts",
+]
+
+[[tool.mypy.overrides]]
+module = ["celery.*"]
+ignore_missing_imports = true
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
