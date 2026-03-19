@@ -110,8 +110,21 @@ export interface components {
             diff_clusters: components["schemas"]["DiffCluster"][];
             /** Mappings */
             mappings: components["schemas"]["ContributionMapping"][];
+            metadata: components["schemas"]["AnalysisRuntimeMetadata"];
             /** Warnings */
             warnings: string[];
+        };
+        /** AnalysisRuntimeMetadata */
+        AnalysisRuntimeMetadata: {
+            paper_source_kind: components["schemas"]["PaperSourceKind"];
+            parser_mode: components["schemas"]["ProcessorMode"];
+            repo_tracer_mode: components["schemas"]["ProcessorMode"];
+            diff_analyzer_mode: components["schemas"]["ProcessorMode"];
+            contribution_mapper_mode: components["schemas"]["ProcessorMode"];
+            /** Selected Repo Strategy */
+            selected_repo_strategy: string;
+            /** Fallback Notes */
+            fallback_notes: string[];
         };
         /** BaseRepoCandidate */
         BaseRepoCandidate: {
@@ -240,6 +253,16 @@ export interface components {
             /** Impl Hints */
             impl_hints: string[];
         };
+        /**
+         * PaperSourceKind
+         * @enum {string}
+         */
+        PaperSourceKind: "arxiv" | "pdf_url" | "pdf_file" | "text_reference";
+        /**
+         * ProcessorMode
+         * @enum {string}
+         */
+        ProcessorMode: "heuristic" | "llm" | "strategy_chain" | "fixture";
         /** ResultResponse */
         ResultResponse: {
             result: components["schemas"]["AnalysisResult"];

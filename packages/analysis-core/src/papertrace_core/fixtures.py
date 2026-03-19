@@ -5,7 +5,14 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from papertrace_core.models import AnalysisResult
+from papertrace_core.cases import default_case_examples
+from papertrace_core.inputs import detect_paper_source_kind
+from papertrace_core.models import (
+    AnalysisResult,
+    AnalysisRuntimeMetadata,
+    PaperSourceKind,
+    ProcessorMode,
+)
 
 GOLDEN_FIXTURE_DIR = Path("fixtures/golden")
 PAPER_FIXTURE_DIR = Path("fixtures/papers")
@@ -39,9 +46,28 @@ def available_case_slugs() -> list[str]:
     return sorted(path.stem for path in GOLDEN_FIXTURE_DIR.glob("*.json"))
 
 
+def build_fixture_metadata(case_slug: str) -> AnalysisRuntimeMetadata:
+    example_by_slug = {case.slug: case for case in default_case_examples()}
+    example = example_by_slug.get(case_slug)
+    paper_source_kind = PaperSourceKind.TEXT_REFERENCE
+    if example is not None:
+        paper_source_kind = detect_paper_source_kind(example.paper_source)
+
+    return AnalysisRuntimeMetadata(
+        paper_source_kind=paper_source_kind,
+        parser_mode=ProcessorMode.FIXTURE,
+        repo_tracer_mode=ProcessorMode.FIXTURE,
+        diff_analyzer_mode=ProcessorMode.FIXTURE,
+        contribution_mapper_mode=ProcessorMode.FIXTURE,
+        selected_repo_strategy="fixture",
+        fallback_notes=["Golden fixture payload does not include runtime provenance."],
+    )
+
+
 def load_golden_case(case_slug: str) -> AnalysisResult:
     fixture_path = GOLDEN_FIXTURE_DIR / f"{case_slug}.json"
     payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    payload.setdefault("metadata", build_fixture_metadata(case_slug).model_dump(mode="json"))
     return AnalysisResult.model_validate(payload)
 
 

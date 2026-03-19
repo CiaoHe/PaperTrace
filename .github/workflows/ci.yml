@@ -31,3 +31,9 @@ jobs:
         run: make lint PYTHON="$(which python)"
       - name: Test
         run: make test PYTHON="$(which python)"
+      - name: Verify contracts
+        run: |
+          make contracts
+          git diff --exit-code -- packages/contracts/src/openapi.ts
+      - name: Verify web build
+        run: pnpm --filter @papertrace/web build

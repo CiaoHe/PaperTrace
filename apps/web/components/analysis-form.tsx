@@ -12,6 +12,10 @@ function statusClass(status: JobStatusResponse["status"]): string {
   return status === "failed" ? "status failed" : "status";
 }
 
+function formatEnumLabel(value: string): string {
+  return value.replaceAll("_", " ");
+}
+
 export function AnalysisForm() {
   const paperSourceId = useId();
   const repoUrlId = useId();
@@ -270,6 +274,36 @@ export function AnalysisForm() {
               </div>
 
               <div>
+                <h3>Runtime provenance</h3>
+                <div className="list">
+                  <div className="item">
+                    <h4>Paper source kind</h4>
+                    <p>{formatEnumLabel(result.metadata.paper_source_kind)}</p>
+                  </div>
+                  <div className="item">
+                    <h4>Parser mode</h4>
+                    <p>{formatEnumLabel(result.metadata.parser_mode)}</p>
+                  </div>
+                  <div className="item">
+                    <h4>Repo tracer mode</h4>
+                    <p>{formatEnumLabel(result.metadata.repo_tracer_mode)}</p>
+                  </div>
+                  <div className="item">
+                    <h4>Diff analyzer mode</h4>
+                    <p>{formatEnumLabel(result.metadata.diff_analyzer_mode)}</p>
+                  </div>
+                  <div className="item">
+                    <h4>Contribution mapper mode</h4>
+                    <p>{formatEnumLabel(result.metadata.contribution_mapper_mode)}</p>
+                  </div>
+                  <div className="item">
+                    <h4>Selected repo strategy</h4>
+                    <p>{formatEnumLabel(result.metadata.selected_repo_strategy)}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div>
                 <h3>Base repo candidates</h3>
                 <div className="list">
                   {result.base_repo_candidates.map((candidate) => (
@@ -341,6 +375,19 @@ export function AnalysisForm() {
                   ))}
                 </div>
               </div>
+
+              {result.metadata.fallback_notes.length > 0 ? (
+                <div>
+                  <h3>Runtime fallback notes</h3>
+                  <div className="list">
+                    {result.metadata.fallback_notes.map((note) => (
+                      <div className="warning" key={note}>
+                        {note}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
 
               {result.warnings.length > 0 ? (
                 <div>

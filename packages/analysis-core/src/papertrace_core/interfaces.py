@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 from papertrace_core.models import (
@@ -8,11 +9,41 @@ from papertrace_core.models import (
     ContributionMapping,
     DiffCluster,
     PaperContribution,
+    ProcessorMode,
 )
 
 
+@dataclass(frozen=True)
+class ParseOutput:
+    contributions: list[PaperContribution]
+    mode: ProcessorMode
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class TraceOutput:
+    selected_base_repo: BaseRepoCandidate
+    candidates: list[BaseRepoCandidate]
+    mode: ProcessorMode
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class DiffOutput:
+    diff_clusters: list[DiffCluster]
+    mode: ProcessorMode
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
+class MappingOutput:
+    mappings: list[ContributionMapping]
+    mode: ProcessorMode
+    warnings: list[str]
+
+
 class PaperParser(Protocol):
-    def parse(self, request: AnalysisRequest) -> list[PaperContribution]: ...
+    def parse(self, request: AnalysisRequest) -> ParseOutput: ...
 
 
 class RepoTracer(Protocol):
@@ -20,7 +51,7 @@ class RepoTracer(Protocol):
         self,
         request: AnalysisRequest,
         contributions: list[PaperContribution],
-    ) -> tuple[BaseRepoCandidate, list[BaseRepoCandidate]]: ...
+    ) -> TraceOutput: ...
 
 
 class DiffAnalyzer(Protocol):
@@ -29,7 +60,7 @@ class DiffAnalyzer(Protocol):
         request: AnalysisRequest,
         selected_base_repo: BaseRepoCandidate,
         contributions: list[PaperContribution],
-    ) -> list[DiffCluster]: ...
+    ) -> DiffOutput: ...
 
 
 class ContributionMapper(Protocol):
@@ -38,4 +69,4 @@ class ContributionMapper(Protocol):
         request: AnalysisRequest,
         contributions: list[PaperContribution],
         diff_clusters: list[DiffCluster],
-    ) -> list[ContributionMapping]: ...
+    ) -> MappingOutput: ...

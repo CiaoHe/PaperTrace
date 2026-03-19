@@ -38,6 +38,13 @@ class PaperSourceKind(StrEnum):
     TEXT_REFERENCE = "text_reference"
 
 
+class ProcessorMode(StrEnum):
+    HEURISTIC = "heuristic"
+    LLM = "llm"
+    STRATEGY_CHAIN = "strategy_chain"
+    FIXTURE = "fixture"
+
+
 class AnalysisRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -76,6 +83,16 @@ class ContributionMapping(BaseModel):
     completeness: str
 
 
+class AnalysisRuntimeMetadata(BaseModel):
+    paper_source_kind: PaperSourceKind
+    parser_mode: ProcessorMode
+    repo_tracer_mode: ProcessorMode
+    diff_analyzer_mode: ProcessorMode
+    contribution_mapper_mode: ProcessorMode
+    selected_repo_strategy: str
+    fallback_notes: list[str]
+
+
 class AnalysisResult(BaseModel):
     case_slug: str
     summary: str
@@ -84,6 +101,7 @@ class AnalysisResult(BaseModel):
     contributions: list[PaperContribution]
     diff_clusters: list[DiffCluster]
     mappings: list[ContributionMapping]
+    metadata: AnalysisRuntimeMetadata
     warnings: list[str]
 
 
