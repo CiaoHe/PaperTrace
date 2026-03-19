@@ -15,6 +15,16 @@ class ContributionPattern:
     impl_hints: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ContentSignature:
+    contribution_id: str
+    title: str
+    section: str
+    keywords: tuple[str, ...]
+    impl_hints: tuple[str, ...]
+    triggers: tuple[str, ...]
+
+
 CASE_PATTERNS: dict[str, tuple[ContributionPattern, ...]] = {
     "lora": (
         ContributionPattern(
@@ -52,7 +62,48 @@ CASE_PATTERNS: dict[str, tuple[ContributionPattern, ...]] = {
     ),
 }
 
+CONTENT_SIGNATURES: tuple[ContentSignature, ...] = (
+    ContentSignature(
+        contribution_id="C1",
+        title="Low-rank adaptation modules",
+        section="Abstract",
+        keywords=("low-rank", "adapter", "rank-decomposition"),
+        impl_hints=("Insert trainable rank-decomposition matrices into attention projections.",),
+        triggers=("low-rank", "rank decomposition", "adapter", "adaptation matrices"),
+    ),
+    ContentSignature(
+        contribution_id="C2",
+        title="Frozen backbone fine-tuning",
+        section="Abstract",
+        keywords=("frozen", "backbone", "trainable"),
+        impl_hints=("Keep pretrained weights frozen and optimize only the adapter parameters.",),
+        triggers=("frozen", "freeze", "pretrained weights", "trainable parameters"),
+    ),
+    ContentSignature(
+        contribution_id="C1",
+        title="Direct preference optimization objective",
+        section="Abstract",
+        keywords=("preference", "objective", "alignment"),
+        impl_hints=("Replace reward-model optimization with a direct preference loss over policy outputs.",),
+        triggers=("direct preference optimization", "preference objective", "reward model", "preference data"),
+    ),
+    ContentSignature(
+        contribution_id="C1",
+        title="IO-aware fused attention kernel",
+        section="Abstract",
+        keywords=("io-aware", "attention", "kernel"),
+        impl_hints=("Fuse tiled attention steps into a memory-efficient exact attention kernel.",),
+        triggers=("io-aware", "exact attention", "fused attention", "attention kernel", "tiling"),
+    ),
+)
+
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]{2,}")
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+LEADING_PHRASE_RE = re.compile(
+    r"^(?:we|our work|our method|this paper|the paper)\s+"
+    r"(?:introduce|propose|present|develop|show|demonstrate|study|build|derive)\s+",
+    flags=re.IGNORECASE,
+)
 STOPWORDS = {
     "with",
     "from",
@@ -66,12 +117,50 @@ STOPWORDS = {
     "implementation",
     "implement",
 }
+CONTRIBUTION_MARKERS = (
+    "we introduce",
+    "we propose",
+    "we present",
+    "our contributions",
+    "our method",
+    "this paper",
+    "we show",
+)
+TECHNICAL_MARKERS = (
+    "module",
+    "objective",
+    "kernel",
+    "attention",
+    "adapter",
+    "frozen",
+    "alignment",
+    "loss",
+    "efficient",
+    "exact",
+    "routing",
+    "encoder",
+)
 
 
 def infer_contributions(case_slug: str, title: str, text: str) -> list[PaperContribution]:
-    patterns = CASE_PATTERNS.get(case_slug, ())
     haystack = f"{title}\n{text}".lower()
     contributions: list[PaperContribution] = []
+
+    for signature in CONTENT_SIGNATURES:
+        matched_triggers = [trigger for trigger in signature.triggers if trigger in haystack]
+        if not matched_triggers:
+            continue
+        contributions.append(
+            PaperContribution(
+                id=signature.contribution_id,
+                title=signature.title,
+                section=signature.section,
+                keywords=list(dict.fromkeys([*signature.keywords, *matched_triggers]))[:4],
+                impl_hints=list(signature.impl_hints),
+            )
+        )
+
+    patterns = CASE_PATTERNS.get(case_slug, ())
     for pattern in patterns:
         matched_keywords = [keyword for keyword in pattern.keywords if keyword in haystack]
         if not matched_keywords:
@@ -85,11 +174,73 @@ def infer_contributions(case_slug: str, title: str, text: str) -> list[PaperCont
                 impl_hints=list(pattern.impl_hints),
             )
         )
-    return contributions
+
+    if contributions:
+        return dedupe_contributions(contributions)
+
+    generic_contributions = infer_sentence_contributions(title, text)
+    if generic_contributions:
+        return generic_contributions
+    return []
+
+
+def dedupe_contributions(contributions: list[PaperContribution]) -> list[PaperContribution]:
+    deduped: dict[str, PaperContribution] = {}
+    for contribution in contributions:
+        deduped.setdefault(contribution.title.lower(), contribution)
+    return list(deduped.values())
 
 
 def tokenize(text: str) -> set[str]:
     return {token for token in TOKEN_RE.findall(text.lower()) if token not in STOPWORDS and not token.isdigit()}
+
+
+def split_sentences(text: str) -> list[str]:
+    return [sentence.strip() for sentence in SENTENCE_SPLIT_RE.split(text) if sentence.strip()]
+
+
+def score_contribution_sentence(sentence: str) -> int:
+    lower_sentence = sentence.lower()
+    marker_score = sum(3 for marker in CONTRIBUTION_MARKERS if marker in lower_sentence)
+    technical_score = sum(1 for marker in TECHNICAL_MARKERS if marker in lower_sentence)
+    token_score = min(len(tokenize(sentence)) // 6, 3)
+    return marker_score + technical_score + token_score
+
+
+def sentence_to_title(sentence: str) -> str:
+    normalized = LEADING_PHRASE_RE.sub("", sentence.strip().rstrip("."))
+    if not normalized:
+        normalized = sentence.strip().rstrip(".")
+    words = normalized.split()
+    return " ".join(words[:8])[:120]
+
+
+def infer_sentence_contributions(title: str, text: str) -> list[PaperContribution]:
+    candidate_sentences = split_sentences(f"{title}. {text}")
+    ranked_sentences = sorted(
+        ((score_contribution_sentence(sentence), sentence) for sentence in candidate_sentences),
+        key=lambda item: (item[0], len(item[1])),
+        reverse=True,
+    )
+    contributions: list[PaperContribution] = []
+    for index, (score, sentence) in enumerate(ranked_sentences, start=1):
+        if score < 4:
+            continue
+        keywords = list(tokenize(sentence))[:4]
+        if not keywords:
+            continue
+        contributions.append(
+            PaperContribution(
+                id=f"H{index}",
+                title=sentence_to_title(sentence),
+                section="Abstract",
+                keywords=keywords,
+                impl_hints=[sentence.strip()],
+            )
+        )
+        if len(contributions) >= 3:
+            break
+    return dedupe_contributions(contributions)
 
 
 def collect_unmatched_ids(

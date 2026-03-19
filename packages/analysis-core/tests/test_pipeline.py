@@ -185,6 +185,54 @@ def test_heuristic_paper_parser_uses_fetched_paper_document() -> None:
     assert result.contributions[0].id == "C1"
 
 
+def test_heuristic_paper_parser_infers_dpo_from_pdf_text_without_case_alias() -> None:
+    request = AnalysisRequest(
+        paper_source="/tmp/uploaded-paper.pdf",
+        repo_url="https://github.com/example/research-repo",
+    )
+    paper_document = paper_document_from_fixture(request, load_paper_fixture("dpo")).model_copy(
+        update={
+            "source_kind": PaperSourceKind.PDF_FILE,
+            "title": "Direct Preference Optimization",
+            "text": (
+                "Direct Preference Optimization is a simple preference objective. "
+                "Our method removes the need for an explicit reward model and "
+                "optimizes directly on preference data."
+            ),
+        }
+    )
+
+    result = HeuristicPaperParser().parse(request, paper_document)
+
+    assert result.mode == ProcessorMode.HEURISTIC
+    assert any(
+        contribution.title == "Direct preference optimization objective" for contribution in result.contributions
+    )
+
+
+def test_heuristic_paper_parser_derives_generic_contribution_from_pdf_abstract() -> None:
+    request = AnalysisRequest(
+        paper_source="/tmp/unknown-paper.pdf",
+        repo_url="https://github.com/example/research-repo",
+    )
+    paper_document = paper_document_from_fixture(request, load_paper_fixture("lora")).model_copy(
+        update={
+            "source_kind": PaperSourceKind.PDF_FILE,
+            "title": "Sparse Routing Encoder",
+            "text": (
+                "We introduce a sparse routing encoder for long-context retrieval. "
+                "The encoder compresses long documents while preserving retrieval accuracy."
+            ),
+        }
+    )
+
+    result = HeuristicPaperParser().parse(request, paper_document)
+
+    assert result.mode == ProcessorMode.HEURISTIC
+    assert result.contributions
+    assert "sparse routing encoder" in result.contributions[0].title.lower()
+
+
 def test_repo_tracer_extracts_repo_mentions_from_paper_document_text() -> None:
     request = AnalysisRequest(
         paper_source="https://arxiv.org/abs/2106.09685 LoRA",
