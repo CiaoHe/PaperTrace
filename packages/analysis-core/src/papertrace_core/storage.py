@@ -54,9 +54,7 @@ def get_engine() -> Engine:
                 path = sqlite_path.replace("pysqlite:///", "")
                 if path:
                     Path(path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
-        connect_args = (
-            {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-        )
+        connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
         _ENGINE = create_engine(settings.database_url, future=True, connect_args=connect_args)
     return _ENGINE
 
@@ -169,9 +167,7 @@ def update_job_status(
 
 def list_jobs() -> list[JobStatusResponse]:
     with session_scope() as session:
-        records = session.scalars(
-            select(AnalysisJobRecord).order_by(AnalysisJobRecord.created_at.desc())
-        ).all()
+        records = session.scalars(select(AnalysisJobRecord).order_by(AnalysisJobRecord.created_at.desc())).all()
         return [
             JobStatusResponse(
                 id=record.id,

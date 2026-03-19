@@ -22,18 +22,14 @@ CASE_PATTERNS: dict[str, tuple[ContributionPattern, ...]] = {
             title="Low-rank adaptation modules",
             section="Section 3",
             keywords=("low-rank", "adapter", "transformers"),
-            impl_hints=(
-                "Insert trainable rank-decomposition matrices into attention projections.",
-            ),
+            impl_hints=("Insert trainable rank-decomposition matrices into attention projections.",),
         ),
         ContributionPattern(
             contribution_id="C2",
             title="Frozen backbone fine-tuning",
             section="Section 4",
             keywords=("frozen", "backbone", "trainable"),
-            impl_hints=(
-                "Keep pretrained weights frozen and optimize only the adapter parameters.",
-            ),
+            impl_hints=("Keep pretrained weights frozen and optimize only the adapter parameters.",),
         ),
     ),
     "dpo": (
@@ -42,10 +38,7 @@ CASE_PATTERNS: dict[str, tuple[ContributionPattern, ...]] = {
             title="Direct preference optimization objective",
             section="Section 2",
             keywords=("preference", "objective", "trl"),
-            impl_hints=(
-                "Replace reward-model optimization with a direct preference loss over policy "
-                "outputs.",
-            ),
+            impl_hints=("Replace reward-model optimization with a direct preference loss over policy outputs.",),
         ),
     ),
     "flash-attention": (
@@ -54,9 +47,7 @@ CASE_PATTERNS: dict[str, tuple[ContributionPattern, ...]] = {
             title="IO-aware fused attention kernel",
             section="Section 3",
             keywords=("io-aware", "attention", "kernel"),
-            impl_hints=(
-                "Fuse tiled attention steps into a memory-efficient exact attention kernel.",
-            ),
+            impl_hints=("Fuse tiled attention steps into a memory-efficient exact attention kernel.",),
         ),
     ),
 }
@@ -98,11 +89,7 @@ def infer_contributions(case_slug: str, title: str, text: str) -> list[PaperCont
 
 
 def tokenize(text: str) -> set[str]:
-    return {
-        token
-        for token in TOKEN_RE.findall(text.lower())
-        if token not in STOPWORDS and not token.isdigit()
-    }
+    return {token for token in TOKEN_RE.findall(text.lower()) if token not in STOPWORDS and not token.isdigit()}
 
 
 def collect_unmatched_ids(
@@ -113,14 +100,10 @@ def collect_unmatched_ids(
     matched_contribution_ids = {mapping.contribution_id for mapping in mappings}
     matched_diff_cluster_ids = {mapping.diff_cluster_id for mapping in mappings}
     unmatched_contribution_ids = [
-        contribution.id
-        for contribution in contributions
-        if contribution.id not in matched_contribution_ids
+        contribution.id for contribution in contributions if contribution.id not in matched_contribution_ids
     ]
     unmatched_diff_cluster_ids = [
-        diff_cluster.id
-        for diff_cluster in diff_clusters
-        if diff_cluster.id not in matched_diff_cluster_ids
+        diff_cluster.id for diff_cluster in diff_clusters if diff_cluster.id not in matched_diff_cluster_ids
     ]
     return unmatched_contribution_ids, unmatched_diff_cluster_ids
 
@@ -132,9 +115,7 @@ def rank_contribution_match(
     haystack = " ".join([diff_cluster.label, diff_cluster.summary, *diff_cluster.files]).lower()
     keyword_hits = [keyword for keyword in contribution.keywords if keyword.lower() in haystack]
     title_hits = sorted(token for token in tokenize(contribution.title) if token in haystack)
-    hint_hits = sorted(
-        {token for hint in contribution.impl_hints for token in tokenize(hint) if token in haystack}
-    )
+    hint_hits = sorted({token for hint in contribution.impl_hints for token in tokenize(hint) if token in haystack})
 
     score = len(keyword_hits) * 5 + len(title_hits) * 2 + min(len(hint_hits), 3)
     if score == 0:

@@ -80,9 +80,7 @@ class ArxivPaperSourceFetcher:
                 raise PaperFetchError(f"No arXiv entry returned for {arxiv_id}")
 
             title = (entry.findtext("atom:title", default="", namespaces=ATOM_NS) or "").strip()
-            abstract = (
-                entry.findtext("atom:summary", default="", namespaces=ATOM_NS) or ""
-            ).strip()
+            abstract = (entry.findtext("atom:summary", default="", namespaces=ATOM_NS) or "").strip()
             if not title or not abstract:
                 raise PaperFetchError(f"Incomplete arXiv metadata returned for {arxiv_id}")
         except (ET.ParseError, httpx.HTTPError) as exc:

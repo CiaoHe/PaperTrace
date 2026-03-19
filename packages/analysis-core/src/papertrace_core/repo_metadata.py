@@ -74,9 +74,7 @@ class GitHubRepoMetadataProvider:
                 elif isinstance(encoded_content, str):
                     readme_text = encoded_content
         except (httpx.HTTPError, ValueError, UnicodeDecodeError) as exc:
-            raise RepoMetadataError(
-                f"Failed to fetch GitHub metadata for {request.repo_url}: {exc}"
-            ) from exc
+            raise RepoMetadataError(f"Failed to fetch GitHub metadata for {request.repo_url}: {exc}") from exc
         finally:
             if close_client:
                 client.close()

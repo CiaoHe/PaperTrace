@@ -51,9 +51,7 @@ class LLMClient:
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You extract structured ML paper contributions and reply with JSON only."
-                    ),
+                    "content": ("You extract structured ML paper contributions and reply with JSON only."),
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -89,10 +87,7 @@ class LLMClient:
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You align ML paper contributions with code changes and reply with JSON "
-                        "only."
-                    ),
+                    "content": ("You align ML paper contributions with code changes and reply with JSON only."),
                 },
                 {"role": "user", "content": prompt},
             ],

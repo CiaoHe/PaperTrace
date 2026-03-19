@@ -171,9 +171,7 @@ def test_live_repo_diff_analyzer_groups_new_and_modified_files(
     assert len(result.diff_clusters) == 3
     assert result.diff_clusters[0].id == "D1"
     assert "bucketed as" in result.diff_clusters[0].summary
-    assert any(
-        cluster.change_type == DiffChangeType.MODIFIED_LOSS for cluster in result.diff_clusters
-    )
+    assert any(cluster.change_type == DiffChangeType.MODIFIED_LOSS for cluster in result.diff_clusters)
     assert any(cluster.label == "Low-rank adaptation modules" for cluster in result.diff_clusters)
 
 
@@ -258,9 +256,7 @@ def test_repo_tracer_uses_live_code_fingerprint_candidates(
         triton_repo,
         {
             "src/triton_kernel.py": (
-                "import triton\n\n"
-                "def launch_kernel(block_size, num_warps):\n"
-                "    return triton.jit(block_size)\n"
+                "import triton\n\ndef launch_kernel(block_size, num_warps):\n    return triton.jit(block_size)\n"
             ),
         },
     )
@@ -331,9 +327,7 @@ def test_analysis_service_can_run_without_fixture_primary_path(
         base_repo,
         {
             "src/triton_kernel.py": (
-                "import triton\n\n"
-                "def attention_kernel(block_size, num_warps):\n"
-                "    return triton.jit(block_size)\n"
+                "import triton\n\ndef attention_kernel(block_size, num_warps):\n    return triton.jit(block_size)\n"
             )
         },
     )

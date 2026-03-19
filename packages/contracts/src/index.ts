@@ -1,19 +1,14 @@
 import type { components, paths } from "./openapi";
 
-export type HealthResponse =
-  paths["/api/v1/health"]["get"]["responses"][200]["content"]["application/json"];
+export type HealthResponse = paths["/api/v1/health"]["get"]["responses"][200]["content"]["application/json"];
 
-export type CreateAnalysisRequest =
-  paths["/api/v1/analyses"]["post"]["requestBody"]["content"]["application/json"];
+export type CreateAnalysisRequest = paths["/api/v1/analyses"]["post"]["requestBody"]["content"]["application/json"];
 
-export type CreateAnalysisResponse =
-  paths["/api/v1/analyses"]["post"]["responses"][202]["content"]["application/json"];
+export type CreateAnalysisResponse = paths["/api/v1/analyses"]["post"]["responses"][202]["content"]["application/json"];
 
-export type ExamplesResponse =
-  paths["/api/v1/examples"]["get"]["responses"][200]["content"]["application/json"];
+export type ExamplesResponse = paths["/api/v1/examples"]["get"]["responses"][200]["content"]["application/json"];
 
-export type JobsResponse =
-  paths["/api/v1/analyses"]["get"]["responses"][200]["content"]["application/json"];
+export type JobsResponse = paths["/api/v1/analyses"]["get"]["responses"][200]["content"]["application/json"];
 
 export type ResultResponse =
   paths["/api/v1/analyses/{job_id}/result"]["get"]["responses"][200]["content"]["application/json"];

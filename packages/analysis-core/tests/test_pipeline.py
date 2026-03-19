@@ -82,9 +82,9 @@ def test_repo_tracer_prefers_readme_declaration_over_paper_mention() -> None:
     )
     paper_document = paper_document_from_fixture(request, load_paper_fixture("lora"))
 
-    trace_output = StrategyDrivenRepoTracer(
-        repo_metadata_provider=FixtureRepoMetadataProvider()
-    ).trace(request, paper_document, [])
+    trace_output = StrategyDrivenRepoTracer(repo_metadata_provider=FixtureRepoMetadataProvider()).trace(
+        request, paper_document, []
+    )
 
     assert trace_output.selected_base_repo.strategy == "readme_declaration"
     assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
@@ -100,9 +100,9 @@ def test_repo_tracer_falls_back_to_code_fingerprint_when_no_mentions_exist() -> 
     )
     paper_document = paper_document_from_fixture(request, load_paper_fixture("flash-attention"))
 
-    trace_output = StrategyDrivenRepoTracer(
-        repo_metadata_provider=FixtureRepoMetadataProvider()
-    ).trace(request, paper_document, [])
+    trace_output = StrategyDrivenRepoTracer(repo_metadata_provider=FixtureRepoMetadataProvider()).trace(
+        request, paper_document, []
+    )
 
     assert trace_output.selected_base_repo.strategy == "paper_mention"
     assert trace_output.candidates[0].repo_url == "https://github.com/openai/triton"
@@ -167,14 +167,8 @@ def test_service_records_fallback_notes_when_llm_returns_empty_payloads() -> Non
 
     assert result.metadata.parser_mode == ProcessorMode.HEURISTIC
     assert result.metadata.contribution_mapper_mode == ProcessorMode.HEURISTIC
-    assert (
-        "Paper parser received an empty llm response and fell back."
-        in result.metadata.fallback_notes
-    )
-    assert (
-        "Contribution mapper received an empty llm response and fell back."
-        in result.metadata.fallback_notes
-    )
+    assert "Paper parser received an empty llm response and fell back." in result.metadata.fallback_notes
+    assert "Contribution mapper received an empty llm response and fell back." in result.metadata.fallback_notes
 
 
 def test_heuristic_paper_parser_uses_fetched_paper_document() -> None:
@@ -205,9 +199,9 @@ def test_repo_tracer_extracts_repo_mentions_from_paper_document_text() -> None:
         }
     )
 
-    trace_output = StrategyDrivenRepoTracer(
-        repo_metadata_provider=FixtureRepoMetadataProvider()
-    ).trace(request, paper_document, [])
+    trace_output = StrategyDrivenRepoTracer(repo_metadata_provider=FixtureRepoMetadataProvider()).trace(
+        request, paper_document, []
+    )
 
     assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
     assert any(candidate.strategy == "paper_mention" for candidate in trace_output.candidates)

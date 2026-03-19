@@ -71,10 +71,7 @@ def test_create_analysis_runs_fixture_pipeline() -> None:
         assert result_response.status_code == 200
         result_body = result_response.json()["result"]
         assert result_body["case_slug"] == "lora"
-        assert (
-            result_body["selected_base_repo"]["repo_url"]
-            == "https://github.com/huggingface/transformers"
-        )
+        assert result_body["selected_base_repo"]["repo_url"] == "https://github.com/huggingface/transformers"
         assert result_body["metadata"]["paper_source_kind"] == "arxiv"
         assert result_body["metadata"]["paper_fetch_mode"] == "fixture"
         assert result_body["metadata"]["repo_tracer_mode"] == "strategy_chain"
