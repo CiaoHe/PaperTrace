@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from papertrace_core.models import (
@@ -70,3 +71,7 @@ class ContributionMapper(Protocol):
         contributions: list[PaperContribution],
         diff_clusters: list[DiffCluster],
     ) -> MappingOutput: ...
+
+
+class RepoMirror(Protocol):
+    def prepare(self, repo_url: str) -> Path: ...

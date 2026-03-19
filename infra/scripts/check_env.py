@@ -7,6 +7,7 @@ EXPECTED_PYTHON = Path("/Users/kakusou/micromamba/envs/agent311/bin/python")
 REQUIRED_PATHS = [
     Path(".cache"),
     Path(".local"),
+    Path(".local/repos"),
     Path("fixtures/golden"),
 ]
 OPTIONAL_FILES = [

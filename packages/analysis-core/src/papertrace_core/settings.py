@@ -38,6 +38,32 @@ class Settings(BaseSettings):
     )
     local_cache_dir: Path = Field(default=Path(".cache"), alias="LOCAL_CACHE_DIR")
     local_data_dir: Path = Field(default=Path(".local"), alias="LOCAL_DATA_DIR")
+    enable_live_repo_analysis: bool = Field(default=False, alias="ENABLE_LIVE_REPO_ANALYSIS")
+    repo_clone_timeout_seconds: float = Field(default=45.0, alias="REPO_CLONE_TIMEOUT_SECONDS")
+    repo_max_file_size_bytes: int = Field(default=200_000, alias="REPO_MAX_FILE_SIZE_BYTES")
+    repo_max_files: int = Field(default=200, alias="REPO_MAX_FILES")
+    repo_analysis_include_dirs: tuple[str, ...] = Field(
+        default=(),
+        alias="REPO_ANALYSIS_INCLUDE_DIRS",
+    )
+    repo_analysis_extensions: tuple[str, ...] = Field(
+        default=(
+            ".py",
+            ".pyi",
+            ".md",
+            ".txt",
+            ".yaml",
+            ".yml",
+            ".json",
+            ".toml",
+            ".cu",
+            ".cuh",
+            ".cc",
+            ".cpp",
+            ".h",
+        ),
+        alias="REPO_ANALYSIS_EXTENSIONS",
+    )
     github_token: str | None = Field(default=None, alias="GITHUB_TOKEN")
     llm_api_key: str | None = Field(default=None, alias="LLM_API_KEY")
     llm_base_url: str | None = Field(default=None, alias="LLM_BASE_URL")

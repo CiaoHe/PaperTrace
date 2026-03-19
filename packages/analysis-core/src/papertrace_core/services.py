@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from papertrace_core.cases import detect_case_slug
 from papertrace_core.fixtures import (
@@ -18,6 +20,7 @@ from papertrace_core.interfaces import (
     MappingOutput,
     PaperParser,
     ParseOutput,
+    RepoMirror,
     RepoTracer,
     TraceOutput,
 )
@@ -27,11 +30,13 @@ from papertrace_core.models import (
     AnalysisResult,
     AnalysisRuntimeMetadata,
     BaseRepoCandidate,
+    DiffChangeType,
     DiffCluster,
     PaperContribution,
     ProcessorMode,
 )
-from papertrace_core.settings import get_settings
+from papertrace_core.repos import RepoAccessError, ShallowGitRepoMirror
+from papertrace_core.settings import Settings, get_settings
 
 STRATEGY_PRIORITY: dict[str, int] = {
     "github_fork": 5,
@@ -52,6 +57,108 @@ DECLARATION_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 def dedupe_preserving_order(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
+
+
+def build_repo_file_haystack(relative_path: str, content: str) -> str:
+    return f"{relative_path}\n{content}".lower()
+
+
+def should_include_repo_file(relative_path: str, settings: Settings) -> bool:
+    path = Path(relative_path)
+    if path.name.startswith(".") or ".git" in path.parts:
+        return False
+
+    if settings.repo_analysis_include_dirs and not any(
+        relative_path == prefix or relative_path.startswith(f"{prefix}/")
+        for prefix in settings.repo_analysis_include_dirs
+    ):
+        return False
+
+    if path.suffix.lower() not in settings.repo_analysis_extensions:
+        return False
+
+    return True
+
+
+def list_tracked_files(repo_root: Path, settings: Settings) -> list[str]:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-files"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=settings.repo_clone_timeout_seconds,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+        raise RepoAccessError(f"Failed to enumerate tracked files for {repo_root}: {exc}") from exc
+
+    tracked = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    return [path for path in tracked if should_include_repo_file(path, settings)]
+
+
+def load_repo_snapshot(repo_root: Path, settings: Settings) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    for relative_path in list_tracked_files(repo_root, settings):
+        if len(snapshot) >= settings.repo_max_files:
+            break
+        file_path = repo_root / relative_path
+        if not file_path.is_file():
+            continue
+        if file_path.stat().st_size > settings.repo_max_file_size_bytes:
+            continue
+        try:
+            snapshot[relative_path] = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+    return snapshot
+
+
+def classify_change_type(
+    relative_path: str,
+    content: str,
+    is_new_file: bool,
+) -> DiffChangeType:
+    haystack = build_repo_file_haystack(relative_path, content)
+    if any(token in haystack for token in ("loss", "reward", "preference", "logits")):
+        return DiffChangeType.MODIFIED_LOSS
+    if any(token in haystack for token in ("train", "trainer", "optimizer", "finetune")):
+        return DiffChangeType.MODIFIED_TRAIN
+    if any(token in haystack for token in ("docker", "workflow", "infra", "config", "script")):
+        return DiffChangeType.MODIFIED_INFRA
+    if is_new_file:
+        return DiffChangeType.NEW_MODULE
+    return DiffChangeType.MODIFIED_CORE
+
+
+def select_cluster_label(
+    relative_path: str,
+    content: str,
+    contributions: list[PaperContribution],
+    change_type: DiffChangeType,
+) -> str:
+    haystack = build_repo_file_haystack(relative_path, content)
+    ranked: list[tuple[int, str]] = []
+    for contribution in contributions:
+        score = sum(1 for keyword in contribution.keywords if keyword.lower() in haystack)
+        if score > 0:
+            ranked.append((score, contribution.title))
+    if ranked:
+        ranked.sort(reverse=True)
+        return ranked[0][1]
+    default_labels = {
+        DiffChangeType.NEW_MODULE: "New implementation modules",
+        DiffChangeType.MODIFIED_CORE: "Core implementation changes",
+        DiffChangeType.MODIFIED_LOSS: "Loss and objective changes",
+        DiffChangeType.MODIFIED_TRAIN: "Training flow changes",
+        DiffChangeType.MODIFIED_INFRA: "Infrastructure changes",
+    }
+    return default_labels[change_type]
+
+
+def summarize_cluster(label: str, files: list[str], change_type: DiffChangeType) -> str:
+    if len(files) == 1:
+        return f"{label} inferred from {files[0]}."
+    return f"{label} inferred from {len(files)} files in the {change_type.lower()} bucket."
 
 
 @dataclass(frozen=True)
@@ -201,6 +308,75 @@ class FixtureDiffAnalyzer:
 
 
 @dataclass(frozen=True)
+class LiveRepoDiffAnalyzer:
+    repo_mirror: RepoMirror
+    settings: Settings
+
+    def analyze(
+        self,
+        request: AnalysisRequest,
+        selected_base_repo: BaseRepoCandidate,
+        contributions: list[PaperContribution],
+    ) -> DiffOutput:
+        fixture = load_golden_case(detect_case_slug(request))
+        try:
+            base_root = self.repo_mirror.prepare(selected_base_repo.repo_url)
+            target_root = self.repo_mirror.prepare(request.repo_url)
+            base_snapshot = load_repo_snapshot(base_root, self.settings)
+            target_snapshot = load_repo_snapshot(target_root, self.settings)
+        except RepoAccessError as exc:
+            return DiffOutput(
+                diff_clusters=fixture.diff_clusters,
+                mode=ProcessorMode.FIXTURE,
+                warnings=[
+                    "Diff analyzer fell back to fixture diff clusters.",
+                    str(exc),
+                ],
+            )
+
+        grouped: dict[tuple[DiffChangeType, str], list[str]] = {}
+        for relative_path, content in target_snapshot.items():
+            base_content = base_snapshot.get(relative_path)
+            if base_content == content:
+                continue
+            change_type = classify_change_type(
+                relative_path,
+                content,
+                is_new_file=relative_path not in base_snapshot,
+            )
+            label = select_cluster_label(relative_path, content, contributions, change_type)
+            grouped.setdefault((change_type, label), []).append(relative_path)
+
+        if not grouped:
+            return DiffOutput(
+                diff_clusters=fixture.diff_clusters,
+                mode=ProcessorMode.FIXTURE,
+                warnings=[
+                    (
+                        "Diff analyzer found no meaningful tracked-file changes and fell back "
+                        "to fixture diff clusters."
+                    ),
+                ],
+            )
+
+        diff_clusters = [
+            DiffCluster(
+                id=f"D{index}",
+                label=label,
+                change_type=change_type,
+                files=sorted(files),
+                summary=summarize_cluster(label, sorted(files), change_type),
+            )
+            for index, ((change_type, label), files) in enumerate(grouped.items(), start=1)
+        ]
+        return DiffOutput(
+            diff_clusters=diff_clusters,
+            mode=ProcessorMode.HEURISTIC,
+            warnings=[],
+        )
+
+
+@dataclass(frozen=True)
 class FixtureContributionMapper:
     llm_client: LLMClient | None = None
 
@@ -290,10 +466,19 @@ class AnalysisService:
 
 
 def build_default_analysis_service() -> AnalysisService:
-    llm_client = build_llm_client(get_settings())
+    settings = get_settings()
+    llm_client = build_llm_client(settings)
+    diff_analyzer: DiffAnalyzer
+    if settings.enable_live_repo_analysis:
+        diff_analyzer = LiveRepoDiffAnalyzer(
+            repo_mirror=ShallowGitRepoMirror(settings),
+            settings=settings,
+        )
+    else:
+        diff_analyzer = FixtureDiffAnalyzer()
     return AnalysisService(
         paper_parser=FixturePaperParser(llm_client=llm_client),
         repo_tracer=StrategyDrivenRepoTracer(),
-        diff_analyzer=FixtureDiffAnalyzer(),
+        diff_analyzer=diff_analyzer,
         contribution_mapper=FixtureContributionMapper(llm_client=llm_client),
     )
