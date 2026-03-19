@@ -1,4 +1,6 @@
 from papertrace_core.cases import detect_case_slug
+from papertrace_core.fixtures import load_paper_fixture
+from papertrace_core.heuristics import infer_contributions
 from papertrace_core.models import AnalysisRequest, BaseRepoCandidate
 from papertrace_core.pipeline import run_analysis
 from papertrace_core.services import (
@@ -88,3 +90,13 @@ def test_sort_repo_candidates_prioritizes_strategy_before_confidence() -> None:
     sorted_candidates = sort_repo_candidates(candidates)
 
     assert sorted_candidates[0].strategy == "readme_declaration"
+
+
+def test_infer_contributions_extracts_lora_patterns() -> None:
+    paper_fixture = load_paper_fixture("lora")
+
+    contributions = infer_contributions("lora", paper_fixture)
+
+    assert len(contributions) == 2
+    assert contributions[0].id == "C1"
+    assert "low-rank" in contributions[0].keywords

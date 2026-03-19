@@ -9,6 +9,7 @@ from papertrace_core.fixtures import (
     load_paper_fixture,
     load_repo_fixture,
 )
+from papertrace_core.heuristics import infer_contributions
 from papertrace_core.interfaces import (
     ContributionMapper,
     DiffAnalyzer,
@@ -43,7 +44,12 @@ DECLARATION_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 class FixturePaperParser:
     def parse(self, request: AnalysisRequest) -> list[PaperContribution]:
-        fixture = load_golden_case(detect_case_slug(request))
+        case_slug = detect_case_slug(request)
+        paper_fixture = load_paper_fixture(case_slug)
+        contributions = infer_contributions(case_slug, paper_fixture)
+        if contributions:
+            return contributions
+        fixture = load_golden_case(case_slug)
         return fixture.contributions
 
 
