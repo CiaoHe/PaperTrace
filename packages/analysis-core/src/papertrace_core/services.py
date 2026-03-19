@@ -16,6 +16,7 @@ from papertrace_core.interfaces import (
     PaperParser,
     RepoTracer,
 )
+from papertrace_core.llm import LLMClient, build_llm_client
 from papertrace_core.models import (
     AnalysisRequest,
     AnalysisResult,
@@ -24,6 +25,7 @@ from papertrace_core.models import (
     DiffCluster,
     PaperContribution,
 )
+from papertrace_core.settings import get_settings
 
 STRATEGY_PRIORITY: dict[str, int] = {
     "github_fork": 5,
@@ -42,10 +44,20 @@ DECLARATION_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+@dataclass(frozen=True)
 class FixturePaperParser:
+    llm_client: LLMClient | None = None
+
     def parse(self, request: AnalysisRequest) -> list[PaperContribution]:
         case_slug = detect_case_slug(request)
         paper_fixture = load_paper_fixture(case_slug)
+        if self.llm_client is not None:
+            try:
+                llm_contributions = self.llm_client.extract_contributions(paper_fixture)
+                if llm_contributions:
+                    return llm_contributions
+            except Exception:
+                pass
         contributions = infer_contributions(case_slug, paper_fixture)
         if contributions:
             return contributions
@@ -155,13 +167,23 @@ class FixtureDiffAnalyzer:
         return fixture.diff_clusters
 
 
+@dataclass(frozen=True)
 class FixtureContributionMapper:
+    llm_client: LLMClient | None = None
+
     def map(
         self,
         request: AnalysisRequest,
         contributions: list[PaperContribution],
         diff_clusters: list[DiffCluster],
     ) -> list[ContributionMapping]:
+        if self.llm_client is not None:
+            try:
+                llm_mappings = self.llm_client.map_contributions(contributions, diff_clusters)
+                if llm_mappings:
+                    return llm_mappings
+            except Exception:
+                pass
         mappings = infer_mappings(contributions, diff_clusters)
         if mappings:
             return mappings
@@ -195,9 +217,10 @@ class AnalysisService:
 
 
 def build_default_analysis_service() -> AnalysisService:
+    llm_client = build_llm_client(get_settings())
     return AnalysisService(
-        paper_parser=FixturePaperParser(),
+        paper_parser=FixturePaperParser(llm_client=llm_client),
         repo_tracer=StrategyDrivenRepoTracer(),
         diff_analyzer=FixtureDiffAnalyzer(),
-        contribution_mapper=FixtureContributionMapper(),
+        contribution_mapper=FixtureContributionMapper(llm_client=llm_client),
     )

@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     local_data_dir: Path = Field(default=Path(".local"), alias="LOCAL_DATA_DIR")
     github_token: str | None = Field(default=None, alias="GITHUB_TOKEN")
     llm_api_key: str | None = Field(default=None, alias="LLM_API_KEY")
+    llm_base_url: str | None = Field(default=None, alias="LLM_BASE_URL")
+    llm_model: str | None = Field(default=None, alias="LLM_MODEL")
+    llm_timeout_seconds: float = Field(default=30.0, alias="LLM_TIMEOUT_SECONDS")
 
 
 @lru_cache(maxsize=1)
