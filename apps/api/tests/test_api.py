@@ -76,6 +76,7 @@ def test_create_analysis_runs_fixture_pipeline() -> None:
             == "https://github.com/huggingface/transformers"
         )
         assert result_body["metadata"]["paper_source_kind"] == "arxiv"
+        assert result_body["metadata"]["paper_fetch_mode"] == "fixture"
         assert result_body["metadata"]["repo_tracer_mode"] == "strategy_chain"
 
 

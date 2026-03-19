@@ -55,6 +55,7 @@ def build_fixture_metadata(case_slug: str) -> AnalysisRuntimeMetadata:
 
     return AnalysisRuntimeMetadata(
         paper_source_kind=paper_source_kind,
+        paper_fetch_mode=ProcessorMode.FIXTURE,
         parser_mode=ProcessorMode.FIXTURE,
         repo_tracer_mode=ProcessorMode.FIXTURE,
         diff_analyzer_mode=ProcessorMode.FIXTURE,

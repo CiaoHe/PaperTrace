@@ -9,12 +9,19 @@ from papertrace_core.models import PaperSourceKind
 ARXIV_ABS_RE = re.compile(r"(?:arxiv\.org/(?:abs|pdf)/|arxiv:)(\d{4}\.\d{4,5})(?:v\d+)?", re.I)
 
 
+def extract_arxiv_id(value: str) -> str | None:
+    match = ARXIV_ABS_RE.search(value.strip())
+    if match is None:
+        return None
+    return match.group(1)
+
+
 def detect_paper_source_kind(value: str) -> PaperSourceKind:
     normalized = value.strip()
     if not normalized:
         raise ValueError("Paper source cannot be empty")
 
-    if ARXIV_ABS_RE.search(normalized):
+    if extract_arxiv_id(normalized) is not None:
         return PaperSourceKind.ARXIV
 
     if normalized.lower().startswith(("http://", "https://")) and ".pdf" in normalized.lower():

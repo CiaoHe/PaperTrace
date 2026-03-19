@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from papertrace_core.fixtures import PaperFixture
 from papertrace_core.models import ContributionMapping, DiffCluster, PaperContribution
 
 
@@ -62,9 +61,9 @@ CASE_PATTERNS: dict[str, tuple[ContributionPattern, ...]] = {
 }
 
 
-def infer_contributions(case_slug: str, paper_fixture: PaperFixture) -> list[PaperContribution]:
+def infer_contributions(case_slug: str, title: str, text: str) -> list[PaperContribution]:
     patterns = CASE_PATTERNS.get(case_slug, ())
-    haystack = f"{paper_fixture.title}\n{paper_fixture.text}".lower()
+    haystack = f"{title}\n{text}".lower()
     contributions: list[PaperContribution] = []
     for pattern in patterns:
         matched_keywords = [keyword for keyword in pattern.keywords if keyword in haystack]

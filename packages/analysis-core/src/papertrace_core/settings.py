@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     )
     local_cache_dir: Path = Field(default=Path(".cache"), alias="LOCAL_CACHE_DIR")
     local_data_dir: Path = Field(default=Path(".local"), alias="LOCAL_DATA_DIR")
+    enable_live_paper_fetch: bool = Field(default=False, alias="ENABLE_LIVE_PAPER_FETCH")
+    arxiv_api_base_url: str = Field(default="https://export.arxiv.org", alias="ARXIV_API_BASE_URL")
+    arxiv_timeout_seconds: float = Field(default=15.0, alias="ARXIV_TIMEOUT_SECONDS")
     enable_live_repo_trace: bool = Field(default=False, alias="ENABLE_LIVE_REPO_TRACE")
     enable_live_repo_analysis: bool = Field(default=False, alias="ENABLE_LIVE_REPO_ANALYSIS")
     github_api_base_url: str = Field(

@@ -18,6 +18,7 @@ from papertrace_core.interfaces import (
     DiffOutput,
     MappingOutput,
     PaperParser,
+    PaperSourceFetcher,
     ParseOutput,
     RepoMetadataProvider,
     RepoMirror,
@@ -33,7 +34,13 @@ from papertrace_core.models import (
     DiffChangeType,
     DiffCluster,
     PaperContribution,
+    PaperDocument,
     ProcessorMode,
+)
+from papertrace_core.paper_sources import (
+    ArxivPaperSourceFetcher,
+    ChainedPaperSourceFetcher,
+    FixturePaperSourceFetcher,
 )
 from papertrace_core.repo_metadata import (
     ChainedRepoMetadataProvider,
@@ -168,16 +175,15 @@ def summarize_cluster(label: str, files: list[str], change_type: DiffChangeType)
 
 
 @dataclass(frozen=True)
-class FixturePaperParser:
+class HeuristicPaperParser:
     llm_client: LLMClient | None = None
 
-    def parse(self, request: AnalysisRequest) -> ParseOutput:
+    def parse(self, request: AnalysisRequest, paper_document: PaperDocument) -> ParseOutput:
         case_slug = detect_case_slug(request)
-        paper_fixture = load_paper_fixture(case_slug)
         warnings: list[str] = []
         if self.llm_client is not None:
             try:
-                llm_contributions = self.llm_client.extract_contributions(paper_fixture)
+                llm_contributions = self.llm_client.extract_contributions(paper_document)
                 if llm_contributions:
                     return ParseOutput(
                         contributions=llm_contributions,
@@ -187,7 +193,7 @@ class FixturePaperParser:
                 warnings.append("Paper parser received an empty llm response and fell back.")
             except Exception:
                 warnings.append("Paper parser fell back from llm to heuristic extraction.")
-        contributions = infer_contributions(case_slug, paper_fixture)
+        contributions = infer_contributions(case_slug, paper_document.title, paper_document.text)
         if contributions:
             return ParseOutput(
                 contributions=contributions,
@@ -507,6 +513,7 @@ class FixtureContributionMapper:
 
 @dataclass(frozen=True)
 class AnalysisService:
+    paper_source_fetcher: PaperSourceFetcher
     paper_parser: PaperParser
     repo_tracer: RepoTracer
     diff_analyzer: DiffAnalyzer
@@ -514,7 +521,8 @@ class AnalysisService:
 
     def analyze(self, request: AnalysisRequest) -> AnalysisResult:
         fixture = load_golden_case(detect_case_slug(request))
-        parse_output = self.paper_parser.parse(request)
+        fetch_output = self.paper_source_fetcher.fetch(request)
+        parse_output = self.paper_parser.parse(request, fetch_output.paper_document)
         trace_output = self.repo_tracer.trace(request, parse_output.contributions)
         diff_output = self.diff_analyzer.analyze(
             request,
@@ -528,6 +536,7 @@ class AnalysisService:
         )
         stage_warnings = dedupe_preserving_order(
             [
+                *fetch_output.warnings,
                 *parse_output.warnings,
                 *trace_output.warnings,
                 *diff_output.warnings,
@@ -545,6 +554,7 @@ class AnalysisService:
             mappings=mapping_output.mappings,
             metadata=AnalysisRuntimeMetadata(
                 paper_source_kind=detect_paper_source_kind(request.paper_source),
+                paper_fetch_mode=fetch_output.mode,
                 parser_mode=parse_output.mode,
                 repo_tracer_mode=trace_output.mode,
                 diff_analyzer_mode=diff_output.mode,
@@ -559,8 +569,16 @@ class AnalysisService:
 def build_default_analysis_service() -> AnalysisService:
     settings = get_settings()
     llm_client = build_llm_client(settings)
+    paper_source_fetcher: PaperSourceFetcher
     diff_analyzer: DiffAnalyzer
     repo_tracer_provider: RepoMetadataProvider
+    if settings.enable_live_paper_fetch:
+        paper_source_fetcher = ChainedPaperSourceFetcher(
+            primary=ArxivPaperSourceFetcher(settings),
+            fallback=FixturePaperSourceFetcher(),
+        )
+    else:
+        paper_source_fetcher = FixturePaperSourceFetcher()
     if settings.enable_live_repo_trace:
         repo_tracer_provider = ChainedRepoMetadataProvider(
             primary=GitHubRepoMetadataProvider(settings),
@@ -576,7 +594,8 @@ def build_default_analysis_service() -> AnalysisService:
     else:
         diff_analyzer = FixtureDiffAnalyzer()
     return AnalysisService(
-        paper_parser=FixturePaperParser(llm_client=llm_client),
+        paper_source_fetcher=paper_source_fetcher,
+        paper_parser=HeuristicPaperParser(llm_client=llm_client),
         repo_tracer=StrategyDrivenRepoTracer(repo_metadata_provider=repo_tracer_provider),
         diff_analyzer=diff_analyzer,
         contribution_mapper=FixtureContributionMapper(llm_client=llm_client),

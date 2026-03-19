@@ -15,6 +15,7 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
     page.getByRole("strong").filter({ hasText: "https://github.com/huggingface/transformers" }),
   ).toBeVisible();
   await expect(page.getByText("Runtime provenance")).toBeVisible();
+  await expect(page.getByText("Paper fetch mode")).toBeVisible();
   await expect(page.getByText("strategy chain")).toBeVisible();
   await expect(page.getByText("Contribution mappings")).toBeVisible();
   await expect(page.getByText("D1 → C1")).toBeVisible();

@@ -39,6 +39,7 @@ class PaperSourceKind(StrEnum):
 
 
 class ProcessorMode(StrEnum):
+    REMOTE_FETCH = "remote_fetch"
     HEURISTIC = "heuristic"
     LLM = "llm"
     STRATEGY_CHAIN = "strategy_chain"
@@ -50,6 +51,20 @@ class AnalysisRequest(BaseModel):
 
     paper_source: str = Field(min_length=1)
     repo_url: str = Field(min_length=1)
+
+
+class PaperSection(BaseModel):
+    heading: str
+    text: str
+
+
+class PaperDocument(BaseModel):
+    source_kind: PaperSourceKind
+    source_ref: str
+    title: str
+    abstract: str = ""
+    sections: list[PaperSection] = Field(default_factory=list)
+    text: str
 
 
 class PaperContribution(BaseModel):
@@ -85,6 +100,7 @@ class ContributionMapping(BaseModel):
 
 class AnalysisRuntimeMetadata(BaseModel):
     paper_source_kind: PaperSourceKind
+    paper_fetch_mode: ProcessorMode
     parser_mode: ProcessorMode
     repo_tracer_mode: ProcessorMode
     diff_analyzer_mode: ProcessorMode

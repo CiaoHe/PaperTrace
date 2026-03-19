@@ -117,6 +117,7 @@ export interface components {
         /** AnalysisRuntimeMetadata */
         AnalysisRuntimeMetadata: {
             paper_source_kind: components["schemas"]["PaperSourceKind"];
+            paper_fetch_mode: components["schemas"]["ProcessorMode"];
             parser_mode: components["schemas"]["ProcessorMode"];
             repo_tracer_mode: components["schemas"]["ProcessorMode"];
             diff_analyzer_mode: components["schemas"]["ProcessorMode"];
@@ -262,7 +263,7 @@ export interface components {
          * ProcessorMode
          * @enum {string}
          */
-        ProcessorMode: "heuristic" | "llm" | "strategy_chain" | "fixture";
+        ProcessorMode: "remote_fetch" | "heuristic" | "llm" | "strategy_chain" | "fixture";
         /** ResultResponse */
         ResultResponse: {
             result: components["schemas"]["AnalysisResult"];

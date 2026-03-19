@@ -277,6 +277,10 @@ export function AnalysisForm() {
                 <h3>Runtime provenance</h3>
                 <div className="list">
                   <div className="item">
+                    <h4>Paper fetch mode</h4>
+                    <p>{formatEnumLabel(result.metadata.paper_fetch_mode)}</p>
+                  </div>
+                  <div className="item">
                     <h4>Paper source kind</h4>
                     <p>{formatEnumLabel(result.metadata.paper_source_kind)}</p>
                   </div>

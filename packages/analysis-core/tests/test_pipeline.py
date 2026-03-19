@@ -9,13 +9,14 @@ from papertrace_core.models import (
     PaperSourceKind,
     ProcessorMode,
 )
+from papertrace_core.paper_sources import FixturePaperSourceFetcher, paper_document_from_fixture
 from papertrace_core.pipeline import run_analysis
 from papertrace_core.repo_metadata import FixtureRepoMetadataProvider
 from papertrace_core.services import (
     AnalysisService,
     FixtureContributionMapper,
     FixtureDiffAnalyzer,
-    FixturePaperParser,
+    HeuristicPaperParser,
     StrategyDrivenRepoTracer,
     build_default_analysis_service,
     sort_repo_candidates,
@@ -64,6 +65,7 @@ def test_default_analysis_service_recomposes_fixture_result() -> None:
     assert result.contributions[0].id == "C1"
     assert result.base_repo_candidates[0].strategy == "code_fingerprint"
     assert result.metadata.paper_source_kind == PaperSourceKind.ARXIV
+    assert result.metadata.paper_fetch_mode == ProcessorMode.FIXTURE
     assert result.metadata.parser_mode == ProcessorMode.HEURISTIC
     assert result.metadata.repo_tracer_mode == ProcessorMode.STRATEGY_CHAIN
     assert result.metadata.diff_analyzer_mode == ProcessorMode.FIXTURE
@@ -127,7 +129,7 @@ def test_sort_repo_candidates_prioritizes_strategy_before_confidence() -> None:
 def test_infer_contributions_extracts_lora_patterns() -> None:
     paper_fixture = load_paper_fixture("lora")
 
-    contributions = infer_contributions("lora", paper_fixture)
+    contributions = infer_contributions("lora", paper_fixture.title, paper_fixture.text)
 
     assert len(contributions) == 2
     assert contributions[0].id == "C1"
@@ -150,7 +152,8 @@ def test_service_records_fallback_notes_when_llm_returns_empty_payloads() -> Non
         repo_url="https://github.com/microsoft/LoRA",
     )
     service = AnalysisService(
-        paper_parser=FixturePaperParser(llm_client=cast(Any, EmptyLLMClient())),
+        paper_source_fetcher=FixturePaperSourceFetcher(),
+        paper_parser=HeuristicPaperParser(llm_client=cast(Any, EmptyLLMClient())),
         repo_tracer=StrategyDrivenRepoTracer(repo_metadata_provider=FixtureRepoMetadataProvider()),
         diff_analyzer=FixtureDiffAnalyzer(),
         contribution_mapper=FixtureContributionMapper(llm_client=cast(Any, EmptyLLMClient())),
@@ -168,3 +171,17 @@ def test_service_records_fallback_notes_when_llm_returns_empty_payloads() -> Non
         "Contribution mapper received an empty llm response and fell back."
         in result.metadata.fallback_notes
     )
+
+
+def test_heuristic_paper_parser_uses_fetched_paper_document() -> None:
+    request = AnalysisRequest(
+        paper_source="https://arxiv.org/abs/2106.09685 LoRA",
+        repo_url="https://github.com/microsoft/LoRA",
+    )
+    paper_document = paper_document_from_fixture(request, load_paper_fixture("lora"))
+
+    result = HeuristicPaperParser().parse(request, paper_document)
+
+    assert result.mode == ProcessorMode.HEURISTIC
+    assert result.contributions
+    assert result.contributions[0].id == "C1"

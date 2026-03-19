@@ -7,8 +7,12 @@ from typing import Any
 
 from openai import OpenAI
 
-from papertrace_core.fixtures import PaperFixture
-from papertrace_core.models import ContributionMapping, DiffCluster, PaperContribution
+from papertrace_core.models import (
+    ContributionMapping,
+    DiffCluster,
+    PaperContribution,
+    PaperDocument,
+)
 from papertrace_core.settings import Settings
 
 JSON_BLOCK_RE = re.compile(r"```json\s*(.*?)```", re.DOTALL | re.IGNORECASE)
@@ -34,13 +38,13 @@ class LLMClient:
     client: OpenAI
     model: str
 
-    def extract_contributions(self, paper_fixture: PaperFixture) -> list[PaperContribution]:
+    def extract_contributions(self, paper_document: PaperDocument) -> list[PaperContribution]:
         prompt = (
             "Extract the technical contributions from the following paper excerpt as JSON. "
             "Return only a JSON array. Each item must contain: "
             "id, title, section, keywords, impl_hints.\n\n"
-            f"Title: {paper_fixture.title}\n"
-            f"Text: {paper_fixture.text}\n"
+            f"Title: {paper_document.title}\n"
+            f"Text: {paper_document.text}\n"
         )
         response = self.client.chat.completions.create(
             model=self.model,

@@ -10,8 +10,16 @@ from papertrace_core.models import (
     ContributionMapping,
     DiffCluster,
     PaperContribution,
+    PaperDocument,
     ProcessorMode,
 )
+
+
+@dataclass(frozen=True)
+class FetchOutput:
+    paper_document: PaperDocument
+    mode: ProcessorMode
+    warnings: list[str]
 
 
 @dataclass(frozen=True)
@@ -51,8 +59,12 @@ class MappingOutput:
     warnings: list[str]
 
 
+class PaperSourceFetcher(Protocol):
+    def fetch(self, request: AnalysisRequest) -> FetchOutput: ...
+
+
 class PaperParser(Protocol):
-    def parse(self, request: AnalysisRequest) -> ParseOutput: ...
+    def parse(self, request: AnalysisRequest, paper_document: PaperDocument) -> ParseOutput: ...
 
 
 class RepoTracer(Protocol):
