@@ -38,12 +38,8 @@ export function AnalysisForm() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const unmatchedContributionIds = result
-    ? readOptionalStringArray(result, "unmatched_contribution_ids")
-    : [];
-  const unmatchedDiffClusterIds = result
-    ? readOptionalStringArray(result, "unmatched_diff_cluster_ids")
-    : [];
+  const unmatchedContributionIds = result ? readOptionalStringArray(result, "unmatched_contribution_ids") : [];
+  const unmatchedDiffClusterIds = result ? readOptionalStringArray(result, "unmatched_diff_cluster_ids") : [];
 
   useEffect(() => {
     void (async () => {
@@ -103,9 +99,7 @@ export function AnalysisForm() {
         repo_url: repoUrl,
       });
       setJob(createdJob);
-      setJobs((currentJobs) =>
-        [createdJob, ...currentJobs.filter((item) => item.id !== createdJob.id)].slice(0, 5),
-      );
+      setJobs((currentJobs) => [createdJob, ...currentJobs.filter((item) => item.id !== createdJob.id)].slice(0, 5));
 
       if (createdJob.status === "succeeded") {
         const nextResult = await getAnalysisResult(createdJob.id);
@@ -157,8 +151,8 @@ export function AnalysisForm() {
         <div className="panel-inner">
           <h2>Run a local analysis</h2>
           <p className="muted">
-            Submit an arXiv or PDF reference plus a GitHub repository URL. The current MVP uses
-            fixture-backed CPU-only analysis so the full local workflow stays deterministic.
+            Submit an arXiv or PDF reference plus a GitHub repository URL. The local MVP prefers live public fetch and
+            shallow-clone analysis, then falls back to fixtures when a stage cannot complete.
           </p>
           <form onSubmit={onSubmit}>
             {examples.length > 0 ? (
@@ -168,12 +162,7 @@ export function AnalysisForm() {
                 </span>
                 <div className="chip-row">
                   {examples.map((example) => (
-                    <button
-                      className="chip"
-                      key={example.slug}
-                      onClick={() => applyExample(example)}
-                      type="button"
-                    >
+                    <button className="chip" key={example.slug} onClick={() => applyExample(example)} type="button">
                       {example.title}
                     </button>
                   ))}
@@ -256,11 +245,7 @@ export function AnalysisForm() {
                     </p>
                     <p>{listedJob.summary ?? listedJob.paper_source}</p>
                     <div className="actions" style={{ marginTop: 10 }}>
-                      <button
-                        className="button secondary"
-                        onClick={() => openJob(listedJob)}
-                        type="button"
-                      >
+                      <button className="button secondary" onClick={() => openJob(listedJob)} type="button">
                         Open job
                       </button>
                     </div>
@@ -285,8 +270,7 @@ export function AnalysisForm() {
                 <small>Selected base repo</small>
                 <strong>{result.selected_base_repo.repo_url}</strong>
                 <span className="muted">
-                  {result.selected_base_repo.strategy} • confidence{" "}
-                  {result.selected_base_repo.confidence.toFixed(2)}
+                  {result.selected_base_repo.strategy} • confidence {result.selected_base_repo.confidence.toFixed(2)}
                 </span>
               </div>
 
@@ -382,10 +366,7 @@ export function AnalysisForm() {
                 {result.mappings.length > 0 ? (
                   <div className="list">
                     {result.mappings.map((mapping) => (
-                      <div
-                        className="item"
-                        key={`${mapping.diff_cluster_id}-${mapping.contribution_id}`}
-                      >
+                      <div className="item" key={`${mapping.diff_cluster_id}-${mapping.contribution_id}`}>
                         <h4>
                           {mapping.diff_cluster_id} → {mapping.contribution_id}
                         </h4>

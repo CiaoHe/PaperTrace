@@ -204,14 +204,8 @@ def summarize_cluster(
     rationale: str,
 ) -> str:
     if len(files) == 1:
-        return (
-            f"{label} inferred from {files[0]}; bucketed as {change_type.lower()} "
-            f"because {rationale}."
-        )
-    return (
-        f"{label} inferred from {len(files)} files; bucketed as {change_type.lower()} "
-        f"because {rationale}."
-    )
+        return f"{label} inferred from {files[0]}; bucketed as {change_type.lower()} because {rationale}."
+    return f"{label} inferred from {len(files)} files; bucketed as {change_type.lower()} because {rationale}."
 
 
 @dataclass(frozen=True)
@@ -325,9 +319,7 @@ def build_readme_candidates(
 
     for candidate in paper_candidates:
         aliases = repo_aliases(candidate.repo_url)
-        if candidate.repo_url.lower() in readme_haystack or any(
-            alias in readme_haystack for alias in aliases
-        ):
+        if candidate.repo_url.lower() in readme_haystack or any(alias in readme_haystack for alias in aliases):
             evidence = (
                 f"Repository README declares an upstream relationship with {candidate.repo_url}."
                 if declaration_match
@@ -342,14 +334,10 @@ def build_readme_candidates(
                 )
             )
 
-    derived_readme_targets = [
-        repo_url for repo_url in candidate_repo_urls if repo_url != request.repo_url
-    ]
+    derived_readme_targets = [repo_url for repo_url in candidate_repo_urls if repo_url != request.repo_url]
     for repo_url in derived_readme_targets:
         aliases = repo_aliases(repo_url)
-        if repo_url.lower() not in readme_haystack and not any(
-            alias in readme_haystack for alias in aliases
-        ):
+        if repo_url.lower() not in readme_haystack and not any(alias in readme_haystack for alias in aliases):
             continue
         evidence = (
             f"Repository README references the {aliases[0]} codebase in an upstream declaration."
@@ -367,12 +355,9 @@ def build_readme_candidates(
 
     if not candidates:
         request_aliases = repo_aliases(request.repo_url)
-        if request.repo_url.lower() in readme_haystack or any(
-            alias in readme_haystack for alias in request_aliases
-        ):
+        if request.repo_url.lower() in readme_haystack or any(alias in readme_haystack for alias in request_aliases):
             evidence = (
-                "Repository README references the submitted repository ecosystem in an upstream "
-                "declaration."
+                "Repository README references the submitted repository ecosystem in an upstream declaration."
                 if declaration_match
                 else "Repository README references the submitted repository ecosystem."
             )
@@ -428,10 +413,7 @@ def fingerprint_candidate(
     combined_score = 0.35 * path_score + 0.65 * symbol_score
     shared_paths = len(target_path_tokens & candidate_path_tokens)
     shared_symbols = len(target_symbol_tokens & candidate_symbol_tokens)
-    evidence = (
-        f"Fingerprint overlap found {shared_paths} shared path tokens and "
-        f"{shared_symbols} shared symbol tokens."
-    )
+    evidence = f"Fingerprint overlap found {shared_paths} shared path tokens and {shared_symbols} shared symbol tokens."
     return combined_score, evidence
 
 
@@ -459,9 +441,7 @@ def build_code_fingerprint_candidates(
             candidate_root = repo_mirror.prepare(candidate_repo_url)
             candidate_snapshot = load_repo_snapshot(candidate_root, settings)
         except (RepoAccessError, KeyError) as exc:
-            warnings.append(
-                f"Repo tracer skipped fingerprint candidate {candidate_repo_url}: {exc}"
-            )
+            warnings.append(f"Repo tracer skipped fingerprint candidate {candidate_repo_url}: {exc}")
             continue
 
         score, evidence = fingerprint_candidate(target_snapshot, candidate_snapshot)
@@ -513,9 +493,7 @@ class StrategyDrivenRepoTracer:
         candidate_repo_urls = unique_repo_urls(
             [metadata_output.fork_parent]
             if metadata_output.fork_parent
-            else []
-            + [candidate.repo_url for candidate in paper_candidates]
-            + known_upstream_repo_urls()
+            else [] + [candidate.repo_url for candidate in paper_candidates] + known_upstream_repo_urls()
         )
         readme_haystack = f"{metadata_output.readme_text}\n{metadata_output.notes}".lower()
         candidates.extend(
@@ -620,10 +598,7 @@ class LiveRepoDiffAnalyzer:
                 diff_clusters=fixture.diff_clusters,
                 mode=ProcessorMode.FIXTURE,
                 warnings=[
-                    (
-                        "Diff analyzer found no meaningful tracked-file changes and fell back "
-                        "to fixture diff clusters."
-                    ),
+                    ("Diff analyzer found no meaningful tracked-file changes and fell back to fixture diff clusters."),
                 ],
             )
 
@@ -764,23 +739,23 @@ def build_default_analysis_service() -> AnalysisService:
     diff_analyzer: DiffAnalyzer
     repo_tracer_provider: RepoMetadataProvider
     repo_mirror: RepoMirror | None = None
-    if settings.enable_live_paper_fetch:
+    if settings.use_live_paper_fetch():
         paper_source_fetcher = ChainedPaperSourceFetcher(
             primary=ArxivPaperSourceFetcher(settings),
             fallback=FixturePaperSourceFetcher(),
         )
     else:
         paper_source_fetcher = FixturePaperSourceFetcher()
-    if settings.enable_live_repo_trace:
+    if settings.use_live_repo_trace():
         repo_tracer_provider = ChainedRepoMetadataProvider(
             primary=GitHubRepoMetadataProvider(settings),
             fallback=FixtureRepoMetadataProvider(),
         )
     else:
         repo_tracer_provider = FixtureRepoMetadataProvider()
-    if settings.enable_live_repo_trace or settings.enable_live_repo_analysis:
+    if settings.use_live_repo_trace() or settings.use_live_repo_analysis():
         repo_mirror = ShallowGitRepoMirror(settings)
-    if settings.enable_live_repo_analysis:
+    if settings.use_live_repo_analysis():
         diff_analyzer = LiveRepoDiffAnalyzer(
             repo_mirror=repo_mirror or ShallowGitRepoMirror(settings),
             settings=settings,

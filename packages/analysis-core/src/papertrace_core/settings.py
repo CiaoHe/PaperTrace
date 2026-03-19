@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     )
     local_cache_dir: Path = Field(default=Path(".cache"), alias="LOCAL_CACHE_DIR")
     local_data_dir: Path = Field(default=Path(".local"), alias="LOCAL_DATA_DIR")
+    enable_live_by_default: bool = Field(default=False, alias="ENABLE_LIVE_BY_DEFAULT")
     enable_live_paper_fetch: bool = Field(default=False, alias="ENABLE_LIVE_PAPER_FETCH")
     arxiv_api_base_url: str = Field(default="https://export.arxiv.org", alias="ARXIV_API_BASE_URL")
     arxiv_timeout_seconds: float = Field(default=15.0, alias="ARXIV_TIMEOUT_SECONDS")
@@ -95,6 +96,15 @@ class Settings(BaseSettings):
     llm_base_url: str | None = Field(default=None, alias="LLM_BASE_URL")
     llm_model: str | None = Field(default=None, alias="LLM_MODEL")
     llm_timeout_seconds: float = Field(default=30.0, alias="LLM_TIMEOUT_SECONDS")
+
+    def use_live_paper_fetch(self) -> bool:
+        return self.enable_live_paper_fetch or self.enable_live_by_default
+
+    def use_live_repo_trace(self) -> bool:
+        return self.enable_live_repo_trace or self.enable_live_by_default
+
+    def use_live_repo_analysis(self) -> bool:
+        return self.enable_live_repo_analysis or self.enable_live_by_default
 
 
 @lru_cache(maxsize=1)

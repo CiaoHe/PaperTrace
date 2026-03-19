@@ -13,6 +13,7 @@ from papertrace_core.services import (
     HeuristicPaperParser,
     LiveRepoDiffAnalyzer,
     StrategyDrivenRepoTracer,
+    build_default_analysis_service,
 )
 from papertrace_core.settings import get_settings
 
@@ -28,9 +29,7 @@ def test_smoke_llm_extracts_contributions() -> None:
         repo_url="https://github.com/microsoft/LoRA",
     )
 
-    contributions = llm_client.extract_contributions(
-        paper_document_from_fixture(request, load_paper_fixture("lora"))
-    )
+    contributions = llm_client.extract_contributions(paper_document_from_fixture(request, load_paper_fixture("lora")))
 
     assert contributions
     assert contributions[0].id
@@ -99,3 +98,25 @@ def test_smoke_flash_attention_runs_non_fixture_primary_path() -> None:
     assert result.metadata.contribution_mapper_mode == ProcessorMode.HEURISTIC
     assert result.metadata.selected_repo_strategy != "fallback"
     assert result.diff_clusters
+
+
+@pytest.mark.smoke
+def test_smoke_default_service_prefers_live_path_when_enabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_LIVE_BY_DEFAULT", "true")
+    get_settings.cache_clear()
+    try:
+        result = build_default_analysis_service().analyze(
+            AnalysisRequest(
+                paper_source="https://arxiv.org/abs/2205.14135 Flash Attention",
+                repo_url="https://github.com/Dao-AILab/flash-attention",
+            )
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert result.metadata.paper_fetch_mode == ProcessorMode.REMOTE_FETCH
+    assert result.metadata.repo_tracer_mode == ProcessorMode.STRATEGY_CHAIN
+    assert result.metadata.diff_analyzer_mode == ProcessorMode.HEURISTIC
+    assert result.metadata.selected_repo_strategy != "fallback"
