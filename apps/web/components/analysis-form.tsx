@@ -98,6 +98,32 @@ export function AnalysisForm() {
     }
   }
 
+  async function openJob(listedJob: JobStatusResponse) {
+    setError(null);
+    setPaperSource(listedJob.paper_source);
+    setRepoUrl(listedJob.repo_url);
+    setJob(listedJob);
+
+    if (listedJob.status === "failed") {
+      setResult(null);
+      setError(listedJob.error_message ?? "Analysis failed");
+      return;
+    }
+
+    if (listedJob.result_available || listedJob.status === "succeeded") {
+      try {
+        const nextResult = await getAnalysisResult(listedJob.id);
+        setResult(nextResult);
+      } catch (loadError) {
+        setResult(null);
+        setError(loadError instanceof Error ? loadError.message : "Failed to load analysis result");
+      }
+      return;
+    }
+
+    setResult(null);
+  }
+
   function applyExample(example: GoldenCaseExample) {
     setPaperSource(example.paper_source);
     setRepoUrl(example.repo_url);
@@ -208,6 +234,15 @@ export function AnalysisForm() {
                       {listedJob.status} {listedJob.stage ? `· ${listedJob.stage}` : ""}
                     </p>
                     <p>{listedJob.summary ?? listedJob.paper_source}</p>
+                    <div className="actions" style={{ marginTop: 10 }}>
+                      <button
+                        className="button secondary"
+                        onClick={() => openJob(listedJob)}
+                        type="button"
+                      >
+                        Open job
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>

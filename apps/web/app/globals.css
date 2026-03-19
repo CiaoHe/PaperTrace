@@ -160,6 +160,12 @@ textarea {
   cursor: default;
 }
 
+.button.secondary {
+  background: white;
+  color: var(--ink);
+  border: 1px solid rgba(24, 33, 47, 0.12);
+}
+
 .status {
   display: inline-flex;
   width: fit-content;
