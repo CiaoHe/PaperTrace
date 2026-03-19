@@ -44,6 +44,14 @@ _ENGINE: Engine | None = None
 _SESSION_FACTORY: sessionmaker[Session] | None = None
 
 
+def reset_storage_state() -> None:
+    global _ENGINE, _SESSION_FACTORY
+    if _ENGINE is not None:
+        _ENGINE.dispose()
+    _ENGINE = None
+    _SESSION_FACTORY = None
+
+
 def get_engine() -> Engine:
     global _ENGINE
     if _ENGINE is None:

@@ -9,7 +9,7 @@ from papertrace_core.cases import detect_case_slug
 from papertrace_core.fixtures import (
     load_golden_case,
 )
-from papertrace_core.heuristics import collect_unmatched_ids, infer_contributions, infer_mappings
+from papertrace_core.heuristics import collect_unmatched_ids, infer_document_contributions, infer_mappings
 from papertrace_core.inputs import detect_paper_source_kind, normalize_repo_url
 from papertrace_core.interfaces import (
     ContributionMapper,
@@ -56,6 +56,7 @@ STRATEGY_PRIORITY: dict[str, int] = {
     "github_fork": 5,
     "readme_declaration": 4,
     "paper_mention": 3,
+    "code_reference": 2,
     "code_fingerprint": 2,
     "fallback": 1,
 }
@@ -229,7 +230,7 @@ class HeuristicPaperParser:
                 warnings.append("Paper parser received an empty llm response and fell back.")
             except Exception:
                 warnings.append("Paper parser fell back from llm to heuristic extraction.")
-        contributions = infer_contributions(case_slug, paper_document.title, paper_document.text)
+        contributions = infer_document_contributions(case_slug, paper_document)
         if contributions:
             return ParseOutput(
                 contributions=contributions,
@@ -310,6 +311,25 @@ def build_paper_mention_candidates(paper_document: PaperDocument) -> list[BaseRe
     return dedupe_repo_candidates(candidates)
 
 
+def extract_github_repo_urls(text: str) -> list[str]:
+    repo_urls: list[str] = []
+    for matched_url in GITHUB_URL_RE.findall(text):
+        try:
+            repo_urls.append(normalize_repo_url(matched_url))
+        except ValueError:
+            continue
+    return dedupe_preserving_order(repo_urls)
+
+
+def extract_alias_repo_urls(text: str) -> list[str]:
+    haystack = text.lower()
+    repo_urls: list[str] = []
+    for alias, repo_url in KNOWN_UPSTREAM_ALIAS_MAP.items():
+        if text_contains_alias(haystack, alias):
+            repo_urls.append(repo_url)
+    return dedupe_preserving_order(repo_urls)
+
+
 def build_readme_candidates(
     request: AnalysisRequest,
     readme_haystack: str,
@@ -318,6 +338,18 @@ def build_readme_candidates(
 ) -> list[BaseRepoCandidate]:
     candidates: list[BaseRepoCandidate] = []
     declaration_match = any(pattern.search(readme_haystack) for pattern in DECLARATION_PATTERNS)
+
+    for repo_url in extract_github_repo_urls(readme_haystack):
+        if repo_url == request.repo_url:
+            continue
+        candidates.append(
+            BaseRepoCandidate(
+                repo_url=repo_url,
+                strategy="readme_declaration",
+                confidence=0.88 if declaration_match else 0.82,
+                evidence=f"Repository README includes a direct GitHub upstream reference to {repo_url}.",
+            )
+        )
 
     for candidate in paper_candidates:
         aliases = repo_aliases(candidate.repo_url)
@@ -419,6 +451,35 @@ def fingerprint_candidate(
     return combined_score, evidence
 
 
+def build_code_reference_candidates(
+    request: AnalysisRequest,
+    repo_mirror: RepoMirror | None,
+    settings: Settings | None,
+) -> tuple[list[BaseRepoCandidate], list[str]]:
+    if repo_mirror is None or settings is None:
+        return [], []
+
+    try:
+        target_root = repo_mirror.prepare(request.repo_url)
+        target_snapshot = load_repo_snapshot(target_root, settings)
+    except (RepoAccessError, KeyError) as exc:
+        return [], [f"Repo tracer skipped code-reference analysis: {exc}"]
+
+    snapshot_text = "\n".join(f"{relative_path}\n{content}" for relative_path, content in target_snapshot.items())
+    candidate_repo_urls = extract_alias_repo_urls(snapshot_text)
+    candidates = [
+        BaseRepoCandidate(
+            repo_url=repo_url,
+            strategy="code_reference",
+            confidence=0.74,
+            evidence=f"Target repository imports or references the {repo_aliases(repo_url)[0]} ecosystem directly.",
+        )
+        for repo_url in candidate_repo_urls
+        if repo_url != request.repo_url
+    ]
+    return dedupe_repo_candidates(candidates), []
+
+
 def build_code_fingerprint_candidates(
     request: AnalysisRequest,
     repo_mirror: RepoMirror | None,
@@ -492,10 +553,24 @@ class StrategyDrivenRepoTracer:
 
         paper_candidates = build_paper_mention_candidates(paper_document)
         candidates.extend(paper_candidates)
+        code_reference_candidates, code_reference_warnings = build_code_reference_candidates(
+            request,
+            self.repo_mirror,
+            self.settings,
+        )
+        warnings.extend(code_reference_warnings)
+        candidates.extend(code_reference_candidates)
         candidate_repo_urls = unique_repo_urls(
-            [metadata_output.fork_parent]
-            if metadata_output.fork_parent
-            else [] + [candidate.repo_url for candidate in paper_candidates] + known_upstream_repo_urls()
+            [
+                *([metadata_output.fork_parent] if metadata_output.fork_parent else []),
+                *[candidate.repo_url for candidate in paper_candidates],
+                *[candidate.repo_url for candidate in code_reference_candidates],
+                *extract_github_repo_urls(metadata_output.readme_text),
+                *extract_github_repo_urls(metadata_output.notes),
+                *extract_alias_repo_urls(metadata_output.readme_text),
+                *extract_alias_repo_urls(metadata_output.notes),
+                *known_upstream_repo_urls(),
+            ]
         )
         readme_haystack = f"{metadata_output.readme_text}\n{metadata_output.notes}".lower()
         candidates.extend(

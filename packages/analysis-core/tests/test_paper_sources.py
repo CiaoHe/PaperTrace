@@ -13,6 +13,7 @@ from papertrace_core.paper_sources import (
     FixturePaperSourceFetcher,
     PdfPaperSourceFetcher,
     SourceAwarePaperSourceFetcher,
+    infer_pdf_sections,
     paper_document_from_fixture,
 )
 from papertrace_core.settings import Settings
@@ -219,3 +220,23 @@ def test_source_aware_paper_source_fetcher_routes_pdf_sources() -> None:
 
     assert output.paper_document.source_kind == PaperSourceKind.PDF_URL
     assert "direct preference optimization" in output.paper_document.text.lower()
+
+
+def test_infer_pdf_sections_recovers_named_sections() -> None:
+    sections = infer_pdf_sections(
+        textwrap.dedent(
+            """\
+            Abstract
+            We introduce a robust paper parser.
+            1 Introduction
+            The parser supports section-aware extraction.
+            2 Contributions
+            We present structured contribution normalization.
+            3 Method
+            We rank candidate snippets with section priors.
+            """
+        )
+    )
+
+    assert [section.heading for section in sections] == ["Abstract", "1 Introduction", "2 Contributions", "3 Method"]
+    assert "section-aware extraction" in sections[1].text.lower()

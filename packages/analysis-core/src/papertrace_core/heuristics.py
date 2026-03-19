@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from papertrace_core.models import ContributionMapping, DiffCluster, PaperContribution
+from papertrace_core.models import ContributionMapping, DiffCluster, PaperContribution, PaperDocument, PaperSection
 
 
 @dataclass(frozen=True)
@@ -99,6 +99,10 @@ CONTENT_SIGNATURES: tuple[ContentSignature, ...] = (
 
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]{2,}")
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+LIST_ITEM_RE = re.compile(
+    r"^\s*(?:[-*•]|(?:\(?\d+[\.\)])|(?:\(?[a-zA-Z][\.\)]))\s+(?P<content>.+)$",
+    flags=re.MULTILINE,
+)
 LEADING_PHRASE_RE = re.compile(
     r"^(?:we|our work|our method|this paper|the paper)\s+"
     r"(?:introduce|propose|present|develop|show|demonstrate|study|build|derive)\s+",
@@ -140,6 +144,17 @@ TECHNICAL_MARKERS = (
     "routing",
     "encoder",
 )
+SECTION_HEADING_BOOSTS: dict[str, int] = {
+    "abstract": 3,
+    "introduction": 2,
+    "contributions": 5,
+    "our contributions": 5,
+    "main contributions": 5,
+    "method": 3,
+    "approach": 3,
+    "overview": 2,
+    "experiments": 1,
+}
 
 
 def infer_contributions(case_slug: str, title: str, text: str) -> list[PaperContribution]:
@@ -184,6 +199,18 @@ def infer_contributions(case_slug: str, title: str, text: str) -> list[PaperCont
     return []
 
 
+def infer_document_contributions(case_slug: str, paper_document: PaperDocument) -> list[PaperContribution]:
+    contributions = infer_contributions(case_slug, paper_document.title, paper_document.text)
+    structured_contributions = infer_structured_contributions(paper_document)
+    if contributions and not (
+        structured_contributions and all(contribution.id.startswith("H") for contribution in contributions)
+    ):
+        return contributions
+    if structured_contributions:
+        return structured_contributions
+    return contributions
+
+
 def dedupe_contributions(contributions: list[PaperContribution]) -> list[PaperContribution]:
     deduped: dict[str, PaperContribution] = {}
     for contribution in contributions:
@@ -197,6 +224,24 @@ def tokenize(text: str) -> set[str]:
 
 def split_sentences(text: str) -> list[str]:
     return [sentence.strip() for sentence in SENTENCE_SPLIT_RE.split(text) if sentence.strip()]
+
+
+def extract_list_items(text: str) -> list[str]:
+    items = [match.group("content").strip() for match in LIST_ITEM_RE.finditer(text)]
+    return [item for item in items if len(item) >= 25]
+
+
+def normalize_heading(heading: str) -> str:
+    normalized = re.sub(r"^\d+(?:\.\d+)*\s+", "", heading.strip().lower())
+    return re.sub(r"\s+", " ", normalized)
+
+
+def section_heading_boost(section_heading: str) -> int:
+    normalized = normalize_heading(section_heading)
+    for marker, boost in SECTION_HEADING_BOOSTS.items():
+        if marker in normalized:
+            return boost
+    return 0
 
 
 def score_contribution_sentence(sentence: str) -> int:
@@ -217,6 +262,10 @@ def sentence_to_title(sentence: str) -> str:
 
 def infer_sentence_contributions(title: str, text: str) -> list[PaperContribution]:
     candidate_sentences = split_sentences(f"{title}. {text}")
+    return infer_ranked_sentences(candidate_sentences, default_section="Abstract")
+
+
+def infer_ranked_sentences(candidate_sentences: list[str], default_section: str) -> list[PaperContribution]:
     ranked_sentences = sorted(
         ((score_contribution_sentence(sentence), sentence) for sentence in candidate_sentences),
         key=lambda item: (item[0], len(item[1])),
@@ -233,12 +282,55 @@ def infer_sentence_contributions(title: str, text: str) -> list[PaperContributio
             PaperContribution(
                 id=f"H{index}",
                 title=sentence_to_title(sentence),
-                section="Abstract",
+                section=default_section,
                 keywords=keywords,
                 impl_hints=[sentence.strip()],
             )
         )
         if len(contributions) >= 3:
+            break
+    return dedupe_contributions(contributions)
+
+
+def iter_candidate_sections(paper_document: PaperDocument) -> list[PaperSection]:
+    sections: list[PaperSection] = []
+    if paper_document.abstract.strip():
+        sections.append(PaperSection(heading="Abstract", text=paper_document.abstract))
+    sections.extend(section for section in paper_document.sections if section.text.strip())
+    if not sections:
+        sections.append(PaperSection(heading="Body", text=paper_document.text))
+    return sections
+
+
+def infer_structured_contributions(paper_document: PaperDocument) -> list[PaperContribution]:
+    ranked_candidates: list[tuple[int, str, str]] = []
+    for section in iter_candidate_sections(paper_document):
+        boost = section_heading_boost(section.heading)
+        for item in extract_list_items(section.text):
+            score = score_contribution_sentence(item) + boost + 2
+            ranked_candidates.append((score, section.heading, item))
+        for sentence in split_sentences(section.text):
+            score = score_contribution_sentence(sentence) + boost
+            ranked_candidates.append((score, section.heading, sentence))
+
+    ranked_candidates.sort(key=lambda item: (item[0], len(item[2])), reverse=True)
+    contributions: list[PaperContribution] = []
+    for index, (score, section_heading, snippet) in enumerate(ranked_candidates, start=1):
+        if score < 4:
+            continue
+        keywords = list(tokenize(snippet))[:4]
+        if not keywords:
+            continue
+        contributions.append(
+            PaperContribution(
+                id=f"S{index}",
+                title=sentence_to_title(snippet),
+                section=section_heading or "Body",
+                keywords=keywords,
+                impl_hints=[snippet.strip()],
+            )
+        )
+        if len(contributions) >= 4:
             break
     return dedupe_contributions(contributions)
 

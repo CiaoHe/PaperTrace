@@ -7,6 +7,8 @@ from papertrace_core.models import (
     AnalysisRequest,
     BaseRepoCandidate,
     PaperContribution,
+    PaperDocument,
+    PaperSection,
     PaperSourceKind,
     ProcessorMode,
 )
@@ -231,6 +233,45 @@ def test_heuristic_paper_parser_derives_generic_contribution_from_pdf_abstract()
     assert result.mode == ProcessorMode.HEURISTIC
     assert result.contributions
     assert "sparse routing encoder" in result.contributions[0].title.lower()
+
+
+def test_heuristic_paper_parser_extracts_enumerated_contributions_from_sections() -> None:
+    request = AnalysisRequest(
+        paper_source="/tmp/section-aware-paper.pdf",
+        repo_url="https://github.com/example/research-repo",
+    )
+    paper_document = PaperDocument(
+        source_kind=PaperSourceKind.PDF_FILE,
+        source_ref=request.paper_source,
+        title="Structured Retrieval Distillation",
+        abstract="We present a distillation pipeline for retrieval models.",
+        sections=[
+            PaperSection(
+                heading="1 Our Contributions",
+                text=(
+                    "1. We introduce a retrieval distillation objective that preserves hard-negative ranking.\n"
+                    "2. We present a teacher-student data curation pipeline for long-context corpora.\n"
+                    "3. We show stable CPU-friendly evaluation for local validation."
+                ),
+            )
+        ],
+        text=(
+            "Structured Retrieval Distillation\n"
+            "We present a distillation pipeline for retrieval models.\n"
+            "1. We introduce a retrieval distillation objective that preserves hard-negative ranking.\n"
+            "2. We present a teacher-student data curation pipeline for long-context corpora.\n"
+            "3. We show stable CPU-friendly evaluation for local validation."
+        ),
+    )
+
+    result = HeuristicPaperParser().parse(request, paper_document)
+
+    assert result.mode == ProcessorMode.HEURISTIC
+    assert len(result.contributions) >= 2
+    assert all("contributions" in contribution.section.lower() for contribution in result.contributions[:2])
+    assert any(
+        "retrieval distillation objective" in contribution.title.lower() for contribution in result.contributions
+    )
 
 
 def test_repo_tracer_extracts_repo_mentions_from_paper_document_text() -> None:

@@ -376,3 +376,74 @@ def test_analysis_service_can_run_without_fixture_primary_path(
     assert result.metadata.contribution_mapper_mode == ProcessorMode.HEURISTIC
     assert result.metadata.selected_repo_strategy in {"paper_mention", "code_fingerprint"}
     assert result.diff_clusters
+
+
+def test_repo_tracer_extracts_readme_github_urls_without_seed_aliases() -> None:
+    request = AnalysisRequest(
+        paper_source="https://arxiv.org/abs/9999.00001",
+        repo_url="https://github.com/example/project",
+    )
+    paper_document = PaperDocument(
+        source_kind=PaperSourceKind.ARXIV,
+        source_ref="https://arxiv.org/abs/9999.00001",
+        title="Example Paper",
+        abstract="",
+        sections=[],
+        text="This paper describes a custom system.",
+    )
+
+    class ReadmeUrlRepoMetadataProvider:
+        def fetch(self, _: AnalysisRequest) -> RepoMetadataOutput:
+            return RepoMetadataOutput(
+                fork_parent=None,
+                readme_text="Built on top of https://github.com/example/upstream-core for the base runtime.",
+                notes="",
+                warnings=[],
+            )
+
+    trace_output = StrategyDrivenRepoTracer(repo_metadata_provider=ReadmeUrlRepoMetadataProvider()).trace(
+        request,
+        paper_document,
+        [],
+    )
+
+    assert trace_output.selected_base_repo.strategy == "readme_declaration"
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/example/upstream-core"
+
+
+def test_repo_tracer_extracts_code_reference_candidates_from_imports(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    target_repo = tmp_path / "target-code-reference"
+    init_git_repo(
+        target_repo,
+        {
+            "src/train.py": "from transformers import AutoModel\n\ndef build_model():\n    return AutoModel\n",
+        },
+    )
+
+    tracer = StrategyDrivenRepoTracer(
+        repo_metadata_provider=EmptyRepoMetadataProvider(),
+        repo_mirror=StaticRepoMirror({"https://github.com/example/target-code-reference": target_repo}),
+        settings=repo_settings,
+    )
+    trace_output = tracer.trace(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/9999.00002",
+            repo_url="https://github.com/example/target-code-reference",
+        ),
+        PaperDocument(
+            source_kind=PaperSourceKind.ARXIV,
+            source_ref="https://arxiv.org/abs/9999.00002",
+            title="Target Project",
+            abstract="",
+            sections=[],
+            text="No explicit upstream mention in paper text.",
+        ),
+        [],
+    )
+
+    assert trace_output.selected_base_repo.strategy == "code_reference"
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
+    assert any(candidate.strategy == "code_reference" for candidate in trace_output.candidates)

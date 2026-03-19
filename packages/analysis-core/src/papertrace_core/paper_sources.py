@@ -27,6 +27,11 @@ ABSTRACT_RE = re.compile(
     r"\babstract\b[:\s]*(.+?)(?:\n\s*\n|\n(?:1[\.\s]|introduction\b)|$)",
     flags=re.IGNORECASE | re.DOTALL,
 )
+PDF_HEADING_RE = re.compile(
+    r"^(?:\d+(?:\.\d+)*)?\s*(abstract|introduction|background|related work|our contributions|contributions|"
+    r"method|methods|approach|architecture|experiments|evaluation|results|discussion|conclusion)s?$",
+    flags=re.IGNORECASE,
+)
 
 
 class PaperFetchError(RuntimeError):
@@ -78,6 +83,34 @@ def infer_pdf_abstract(text: str) -> str:
     return "\n".join(lines[1:4])[:1200]
 
 
+def infer_pdf_sections(text: str) -> list[PaperSection]:
+    sections: list[PaperSection] = []
+    current_heading: str | None = None
+    current_lines: list[str] = []
+
+    def flush_section() -> None:
+        nonlocal current_heading, current_lines
+        if current_heading is None:
+            current_lines = []
+            return
+        body = "\n".join(line for line in current_lines if line).strip()
+        if body:
+            sections.append(PaperSection(heading=current_heading, text=body))
+        current_lines = []
+
+    for raw_line in compact_text(text).splitlines():
+        line = raw_line.strip()
+        if len(line) <= 80 and PDF_HEADING_RE.match(line):
+            flush_section()
+            current_heading = line
+            continue
+        if current_heading is not None:
+            current_lines.append(line)
+
+    flush_section()
+    return sections
+
+
 def build_pdf_document(
     text_by_page: list[str],
     source_kind: PaperSourceKind,
@@ -91,10 +124,12 @@ def build_pdf_document(
 
     title = (metadata_title or "").strip() or infer_pdf_title(text, source_ref)
     abstract = infer_pdf_abstract(text)
-    sections = [
-        PaperSection(heading=f"Page {index}", text=page_text)
-        for index, page_text in enumerate(non_empty_pages, start=1)
-    ]
+    sections = infer_pdf_sections(text)
+    if not sections:
+        sections = [
+            PaperSection(heading=f"Page {index}", text=page_text)
+            for index, page_text in enumerate(non_empty_pages, start=1)
+        ]
     return PaperDocument(
         source_kind=source_kind,
         source_ref=source_ref,
