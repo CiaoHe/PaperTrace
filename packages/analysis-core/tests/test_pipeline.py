@@ -1,6 +1,6 @@
 from papertrace_core.cases import detect_case_slug
-from papertrace_core.fixtures import load_paper_fixture
-from papertrace_core.heuristics import infer_contributions
+from papertrace_core.fixtures import load_golden_case, load_paper_fixture
+from papertrace_core.heuristics import infer_contributions, infer_mappings
 from papertrace_core.models import AnalysisRequest, BaseRepoCandidate
 from papertrace_core.pipeline import run_analysis
 from papertrace_core.services import (
@@ -100,3 +100,13 @@ def test_infer_contributions_extracts_lora_patterns() -> None:
     assert len(contributions) == 2
     assert contributions[0].id == "C1"
     assert "low-rank" in contributions[0].keywords
+
+
+def test_infer_mappings_matches_lora_clusters_to_contributions() -> None:
+    golden = load_golden_case("lora")
+
+    mappings = infer_mappings(golden.contributions, golden.diff_clusters)
+
+    assert len(mappings) == 2
+    assert mappings[0].diff_cluster_id == "D1"
+    assert mappings[0].contribution_id == "C1"

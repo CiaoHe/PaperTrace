@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from papertrace_core.fixtures import PaperFixture
-from papertrace_core.models import PaperContribution
+from papertrace_core.models import ContributionMapping, DiffCluster, PaperContribution
 
 
 @dataclass(frozen=True)
@@ -80,3 +80,40 @@ def infer_contributions(case_slug: str, paper_fixture: PaperFixture) -> list[Pap
             )
         )
     return contributions
+
+
+def infer_mappings(
+    contributions: list[PaperContribution],
+    diff_clusters: list[DiffCluster],
+) -> list[ContributionMapping]:
+    mappings: list[ContributionMapping] = []
+    used_contribution_ids: set[str] = set()
+    for diff_cluster in diff_clusters:
+        haystack = " ".join([diff_cluster.label, diff_cluster.summary, *diff_cluster.files]).lower()
+        ranked_contributions: list[tuple[int, PaperContribution]] = []
+        for contribution in contributions:
+            score = sum(1 for keyword in contribution.keywords if keyword.lower() in haystack)
+            if score > 0:
+                ranked_contributions.append((score, contribution))
+        if not ranked_contributions:
+            continue
+        ranked_contributions.sort(
+            key=lambda item: (item[0], item[1].id not in used_contribution_ids, item[1].id),
+            reverse=True,
+        )
+        _, selected_contribution = ranked_contributions[0]
+        used_contribution_ids.add(selected_contribution.id)
+        confidence = min(0.7 + 0.1 * len(selected_contribution.keywords), 0.96)
+        mappings.append(
+            ContributionMapping(
+                diff_cluster_id=diff_cluster.id,
+                contribution_id=selected_contribution.id,
+                confidence=round(confidence, 2),
+                evidence=(
+                    f"Matched contribution keywords {', '.join(selected_contribution.keywords)} "
+                    f"against diff cluster '{diff_cluster.label}'."
+                ),
+                completeness="complete" if confidence >= 0.85 else "partial",
+            )
+        )
+    return mappings

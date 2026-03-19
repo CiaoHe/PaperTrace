@@ -9,7 +9,7 @@ from papertrace_core.fixtures import (
     load_paper_fixture,
     load_repo_fixture,
 )
-from papertrace_core.heuristics import infer_contributions
+from papertrace_core.heuristics import infer_contributions, infer_mappings
 from papertrace_core.interfaces import (
     ContributionMapper,
     DiffAnalyzer,
@@ -162,7 +162,9 @@ class FixtureContributionMapper:
         contributions: list[PaperContribution],
         diff_clusters: list[DiffCluster],
     ) -> list[ContributionMapping]:
-        del contributions, diff_clusters
+        mappings = infer_mappings(contributions, diff_clusters)
+        if mappings:
+            return mappings
         fixture = load_golden_case(detect_case_slug(request))
         return fixture.mappings
 
