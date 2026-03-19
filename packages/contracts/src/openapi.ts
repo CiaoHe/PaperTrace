@@ -155,13 +155,6 @@ export interface components {
             /** Completeness */
             completeness: string;
         };
-        /** CreateAnalysisRequest */
-        CreateAnalysisRequest: {
-            /** Paper Source */
-            paper_source: string;
-            /** Repo Url */
-            repo_url: string;
-        };
         /** CreateAnalysisResponse */
         CreateAnalysisResponse: {
             job: components["schemas"]["JobStatusResponse"];
@@ -391,7 +384,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateAnalysisRequest"];
+                "application/json": {
+                    paper_source: string;
+                    repo_url: string;
+                };
+                "multipart/form-data": {
+                    /** @description arXiv URL, PDF URL, or optional text hint when uploading a PDF */
+                    paper_source?: string;
+                    repo_url: string;
+                    /** Format: binary */
+                    paper_file?: string;
+                };
             };
         };
         responses: {
@@ -402,15 +405,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CreateAnalysisResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

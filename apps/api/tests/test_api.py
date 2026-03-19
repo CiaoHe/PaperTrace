@@ -12,6 +12,48 @@ os.environ["ENABLE_LIVE_BY_DEFAULT"] = "false"
 from papertrace_api.main import app
 
 
+def build_pdf_bytes(title: str, body: str) -> bytes:
+    stream = (
+        "<< /Length {length} >>\nstream\nBT\n/F1 16 Tf\n36 96 Td\n({text}) Tj\nET\nendstream".format(
+            length=len(body.encode("latin-1")) + 31,
+            text=body.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)"),
+        )
+    ).encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] "
+            b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>"
+        ),
+        stream,
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+
+    document = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for index, payload in enumerate(objects, start=1):
+        offsets.append(len(document))
+        document.extend(f"{index} 0 obj\n".encode("latin-1"))
+        document.extend(payload)
+        document.extend(b"\nendobj\n")
+    xref_offset = len(document)
+    document.extend(f"xref\n0 {len(objects) + 1}\n".encode("latin-1"))
+    document.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        document.extend(f"{offset:010d} 00000 n \n".encode("latin-1"))
+    document.extend(
+        ("trailer\n<< /Size {size} /Root 1 0 R /Info << /Title ({title}) >> >>\nstartxref\n{xref}\n%%EOF\n")
+        .format(
+            size=len(objects) + 1,
+            title=title.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)"),
+            xref=xref_offset,
+        )
+        .encode("latin-1")
+    )
+    return bytes(document)
+
+
 def test_health_endpoint() -> None:
     with TestClient(app) as client:
         response = client.get("/api/v1/health")
@@ -81,6 +123,35 @@ def test_create_analysis_runs_fixture_pipeline() -> None:
         assert result_body["metadata"]["paper_source_kind"] == "arxiv"
         assert result_body["metadata"]["paper_fetch_mode"] == "fixture"
         assert result_body["metadata"]["repo_tracer_mode"] == "strategy_chain"
+
+
+def test_create_analysis_accepts_multipart_pdf_upload() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/analyses",
+            data={"repo_url": "https://github.com/microsoft/LoRA"},
+            files={
+                "paper_file": (
+                    "lora-upload.pdf",
+                    build_pdf_bytes(
+                        title="LoRA Upload",
+                        body="Abstract low-rank adaptation modules keep the pretrained backbone frozen.",
+                    ),
+                    "application/pdf",
+                )
+            },
+        )
+
+        assert response.status_code == 202
+        body = response.json()
+        job_id = body["job"]["id"]
+        assert body["job"]["paper_source"].endswith(".pdf")
+
+        result_response = client.get(f"/api/v1/analyses/{job_id}/result")
+        assert result_response.status_code == 200
+        result_body = result_response.json()["result"]
+        assert result_body["metadata"]["paper_source_kind"] == "pdf_file"
+        assert result_body["contributions"]
 
 
 def test_create_analysis_rejects_non_github_repo_url() -> None:

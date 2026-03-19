@@ -29,8 +29,10 @@ function readOptionalStringArray(
 
 export function AnalysisForm() {
   const paperSourceId = useId();
+  const paperFileId = useId();
   const repoUrlId = useId();
   const [paperSource, setPaperSource] = useState(DEFAULT_PAPER);
+  const [paperFile, setPaperFile] = useState<File | null>(null);
   const [repoUrl, setRepoUrl] = useState(DEFAULT_REPO);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [examples, setExamples] = useState<GoldenCaseExample[]>([]);
@@ -97,10 +99,16 @@ export function AnalysisForm() {
     setResult(null);
 
     try {
-      const createdJob = await createAnalysis({
-        paper_source: paperSource,
-        repo_url: repoUrl,
-      });
+      const createdJob = paperFile
+        ? await createAnalysis({
+            paperFile,
+            paperSource: paperSource || undefined,
+            repoUrl,
+          })
+        : await createAnalysis({
+            paper_source: paperSource,
+            repo_url: repoUrl,
+          });
       setJob(createdJob);
       setJobs((currentJobs) => [createdJob, ...currentJobs.filter((item) => item.id !== createdJob.id)].slice(0, 5));
 
@@ -119,6 +127,7 @@ export function AnalysisForm() {
   async function openJob(listedJob: JobStatusResponse) {
     setError(null);
     setPaperSource(listedJob.paper_source);
+    setPaperFile(null);
     setRepoUrl(listedJob.repo_url);
     setJob(listedJob);
 
@@ -144,6 +153,7 @@ export function AnalysisForm() {
 
   function applyExample(example: GoldenCaseExample) {
     setPaperSource(example.paper_source);
+    setPaperFile(null);
     setRepoUrl(example.repo_url);
     setError(null);
   }
@@ -177,9 +187,23 @@ export function AnalysisForm() {
               <input
                 id={paperSourceId}
                 name="paper-source"
+                placeholder="arXiv URL or PDF URL"
                 value={paperSource}
                 onChange={(event) => setPaperSource(event.target.value)}
               />
+            </div>
+            <div className="field">
+              <label htmlFor={paperFileId}>PDF upload</label>
+              <input
+                accept=".pdf,application/pdf"
+                id={paperFileId}
+                name="paper-file"
+                onChange={(event) => setPaperFile(event.target.files?.[0] ?? null)}
+                type="file"
+              />
+              <p className="muted">
+                {paperFile ? `Selected file: ${paperFile.name}` : "Choose a local PDF to submit multipart/form-data."}
+              </p>
             </div>
             <div className="field">
               <label htmlFor={repoUrlId}>Repository URL</label>

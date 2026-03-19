@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     arxiv_timeout_seconds: float = Field(default=15.0, alias="ARXIV_TIMEOUT_SECONDS")
     pdf_fetch_timeout_seconds: float = Field(default=20.0, alias="PDF_FETCH_TIMEOUT_SECONDS")
     pdf_max_pages: int = Field(default=12, alias="PDF_MAX_PAGES")
+    paper_upload_max_bytes: int = Field(default=15_000_000, alias="PAPER_UPLOAD_MAX_BYTES")
     enable_live_repo_trace: bool = Field(default=False, alias="ENABLE_LIVE_REPO_TRACE")
     enable_live_repo_analysis: bool = Field(default=False, alias="ENABLE_LIVE_REPO_ANALYSIS")
     github_api_base_url: str = Field(

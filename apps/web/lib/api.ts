@@ -12,6 +12,12 @@ import type {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
+export interface CreateAnalysisUploadPayload {
+  paperFile: File;
+  paperSource?: string;
+  repoUrl: string;
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const body = await response.text();
@@ -21,14 +27,30 @@ async function parseResponse<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function createAnalysis(payload: CreateAnalysisRequest): Promise<JobStatusResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/analyses`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+export async function createAnalysis(
+  payload: CreateAnalysisRequest | CreateAnalysisUploadPayload,
+): Promise<JobStatusResponse> {
+  const response =
+    "paperFile" in payload
+      ? await fetch(`${API_BASE_URL}/api/v1/analyses`, {
+          method: "POST",
+          body: (() => {
+            const formData = new FormData();
+            formData.set("repo_url", payload.repoUrl);
+            formData.set("paper_file", payload.paperFile);
+            if (payload.paperSource) {
+              formData.set("paper_source", payload.paperSource);
+            }
+            return formData;
+          })(),
+        })
+      : await fetch(`${API_BASE_URL}/api/v1/analyses`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
 
   const body = await parseResponse<CreateAnalysisResponse>(response);
   return body.job;

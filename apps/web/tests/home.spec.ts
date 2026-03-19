@@ -4,6 +4,7 @@ test("renders the local MVP shell", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("PaperTrace local MVP")).toBeVisible();
   await expect(page.getByText("API runtime config")).toBeVisible();
+  await expect(page.getByLabel("PDF upload")).toBeVisible();
   await expect(page.getByRole("button", { name: "Analyze" })).toBeVisible();
 });
 
