@@ -9,7 +9,7 @@ from papertrace_core.cases import detect_case_slug
 from papertrace_core.fixtures import (
     load_golden_case,
 )
-from papertrace_core.heuristics import infer_contributions, infer_mappings
+from papertrace_core.heuristics import collect_unmatched_ids, infer_contributions, infer_mappings
 from papertrace_core.inputs import detect_paper_source_kind, normalize_repo_url
 from papertrace_core.interfaces import (
     ContributionMapper,
@@ -93,6 +93,10 @@ def should_include_repo_file(relative_path: str, settings: Settings) -> bool:
     path = Path(relative_path)
     if path.name.startswith(".") or ".git" in path.parts:
         return False
+    if any(part.lower() in settings.repo_analysis_exclude_dirs for part in path.parts):
+        return False
+    if path.name.lower() in settings.repo_analysis_exclude_filenames:
+        return False
 
     if settings.repo_analysis_include_dirs and not any(
         relative_path == prefix or relative_path.startswith(f"{prefix}/")
@@ -143,17 +147,29 @@ def classify_change_type(
     relative_path: str,
     content: str,
     is_new_file: bool,
-) -> DiffChangeType:
+) -> tuple[DiffChangeType, str]:
     haystack = build_repo_file_haystack(relative_path, content)
     if any(token in haystack for token in ("loss", "reward", "preference", "logits")):
-        return DiffChangeType.MODIFIED_LOSS
+        return DiffChangeType.MODIFIED_LOSS, "content includes loss, reward, or preference tokens"
     if any(token in haystack for token in ("train", "trainer", "optimizer", "finetune")):
-        return DiffChangeType.MODIFIED_TRAIN
+        return (
+            DiffChangeType.MODIFIED_TRAIN,
+            "content includes train, trainer, or optimizer tokens",
+        )
     if any(token in haystack for token in ("docker", "workflow", "infra", "config", "script")):
-        return DiffChangeType.MODIFIED_INFRA
+        return (
+            DiffChangeType.MODIFIED_INFRA,
+            "path or content looks like config or workflow plumbing",
+        )
     if is_new_file:
-        return DiffChangeType.NEW_MODULE
-    return DiffChangeType.MODIFIED_CORE
+        return (
+            DiffChangeType.NEW_MODULE,
+            "file is newly introduced relative to the selected base repo",
+        )
+    return (
+        DiffChangeType.MODIFIED_CORE,
+        "existing implementation file changed outside infra buckets",
+    )
 
 
 def select_cluster_label(
@@ -181,10 +197,21 @@ def select_cluster_label(
     return default_labels[change_type]
 
 
-def summarize_cluster(label: str, files: list[str], change_type: DiffChangeType) -> str:
+def summarize_cluster(
+    label: str,
+    files: list[str],
+    change_type: DiffChangeType,
+    rationale: str,
+) -> str:
     if len(files) == 1:
-        return f"{label} inferred from {files[0]}."
-    return f"{label} inferred from {len(files)} files in the {change_type.lower()} bucket."
+        return (
+            f"{label} inferred from {files[0]}; bucketed as {change_type.lower()} "
+            f"because {rationale}."
+        )
+    return (
+        f"{label} inferred from {len(files)} files; bucketed as {change_type.lower()} "
+        f"because {rationale}."
+    )
 
 
 @dataclass(frozen=True)
@@ -573,17 +600,20 @@ class LiveRepoDiffAnalyzer:
             )
 
         grouped: dict[tuple[DiffChangeType, str], list[str]] = {}
+        rationales: dict[tuple[DiffChangeType, str], str] = {}
         for relative_path, content in target_snapshot.items():
             base_content = base_snapshot.get(relative_path)
             if base_content == content:
                 continue
-            change_type = classify_change_type(
+            change_type, rationale = classify_change_type(
                 relative_path,
                 content,
                 is_new_file=relative_path not in base_snapshot,
             )
             label = select_cluster_label(relative_path, content, contributions, change_type)
-            grouped.setdefault((change_type, label), []).append(relative_path)
+            group_key = (change_type, label)
+            grouped.setdefault(group_key, []).append(relative_path)
+            rationales.setdefault(group_key, rationale)
 
         if not grouped:
             return DiffOutput(
@@ -603,7 +633,12 @@ class LiveRepoDiffAnalyzer:
                 label=label,
                 change_type=change_type,
                 files=sorted(files),
-                summary=summarize_cluster(label, sorted(files), change_type),
+                summary=summarize_cluster(
+                    label,
+                    sorted(files),
+                    change_type,
+                    rationales[(change_type, label)],
+                ),
             )
             for index, ((change_type, label), files) in enumerate(grouped.items(), start=1)
         ]
@@ -629,8 +664,15 @@ class FixtureContributionMapper:
             try:
                 llm_mappings = self.llm_client.map_contributions(contributions, diff_clusters)
                 if llm_mappings:
+                    unmatched_contribution_ids, unmatched_diff_cluster_ids = collect_unmatched_ids(
+                        contributions,
+                        diff_clusters,
+                        llm_mappings,
+                    )
                     return MappingOutput(
                         mappings=llm_mappings,
+                        unmatched_contribution_ids=unmatched_contribution_ids,
+                        unmatched_diff_cluster_ids=unmatched_diff_cluster_ids,
                         mode=ProcessorMode.LLM,
                         warnings=[],
                     )
@@ -638,17 +680,19 @@ class FixtureContributionMapper:
             except Exception:
                 warnings.append("Contribution mapper fell back from llm to heuristic matching.")
         mappings = infer_mappings(contributions, diff_clusters)
-        if mappings:
-            return MappingOutput(
-                mappings=mappings,
-                mode=ProcessorMode.HEURISTIC,
-                warnings=warnings,
-            )
-        fixture = load_golden_case(detect_case_slug(request))
+        unmatched_contribution_ids, unmatched_diff_cluster_ids = collect_unmatched_ids(
+            contributions,
+            diff_clusters,
+            mappings,
+        )
+        if not mappings:
+            warnings.append("Contribution mapper found no confident heuristic matches.")
         return MappingOutput(
-            mappings=fixture.mappings,
-            mode=ProcessorMode.FIXTURE,
-            warnings=[*warnings, "Contribution mapper fell back to fixture mappings."],
+            mappings=mappings,
+            unmatched_contribution_ids=unmatched_contribution_ids,
+            unmatched_diff_cluster_ids=unmatched_diff_cluster_ids,
+            mode=ProcessorMode.HEURISTIC,
+            warnings=warnings,
         )
 
 
@@ -697,6 +741,8 @@ class AnalysisService:
             contributions=parse_output.contributions,
             diff_clusters=diff_output.diff_clusters,
             mappings=mapping_output.mappings,
+            unmatched_contribution_ids=mapping_output.unmatched_contribution_ids,
+            unmatched_diff_cluster_ids=mapping_output.unmatched_diff_cluster_ids,
             metadata=AnalysisRuntimeMetadata(
                 paper_source_kind=detect_paper_source_kind(request.paper_source),
                 paper_fetch_mode=fetch_output.mode,

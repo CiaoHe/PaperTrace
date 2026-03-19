@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
-from papertrace_core.interfaces import RepoMetadataOutput
+from papertrace_core.interfaces import FetchOutput, RepoMetadataOutput
 from papertrace_core.models import (
     AnalysisRequest,
     BaseRepoCandidate,
@@ -14,9 +14,16 @@ from papertrace_core.models import (
     PaperDocument,
     PaperSection,
     PaperSourceKind,
+    ProcessorMode,
 )
 from papertrace_core.repos import RepoAccessError
-from papertrace_core.services import LiveRepoDiffAnalyzer, StrategyDrivenRepoTracer
+from papertrace_core.services import (
+    AnalysisService,
+    FixtureContributionMapper,
+    HeuristicPaperParser,
+    LiveRepoDiffAnalyzer,
+    StrategyDrivenRepoTracer,
+)
 from papertrace_core.settings import Settings
 
 
@@ -37,6 +44,18 @@ class EmptyRepoMetadataProvider:
             fork_parent=None,
             readme_text="",
             notes="",
+            warnings=[],
+        )
+
+
+class StaticPaperSourceFetcher:
+    def __init__(self, paper_document: PaperDocument) -> None:
+        self.paper_document = paper_document
+
+    def fetch(self, _: AnalysisRequest) -> FetchOutput:
+        return FetchOutput(
+            paper_document=self.paper_document,
+            mode=ProcessorMode.REMOTE_FETCH,
             warnings=[],
         )
 
@@ -75,6 +94,8 @@ def repo_settings(tmp_path: Path) -> Settings:
         {
             "LOCAL_DATA_DIR": str(tmp_path / ".local"),
             "ENABLE_LIVE_REPO_ANALYSIS": True,
+            "REPO_ANALYSIS_EXCLUDE_DIRS": ["docs", ".github"],
+            "REPO_ANALYSIS_EXCLUDE_FILENAMES": ["readme.md", "poetry.lock"],
             "REPO_ANALYSIS_INCLUDE_DIRS": ["src"],
             "REPO_MAX_FILE_SIZE_BYTES": 50_000,
             "REPO_MAX_FILES": 50,
@@ -149,10 +170,69 @@ def test_live_repo_diff_analyzer_groups_new_and_modified_files(
     assert result.warnings == []
     assert len(result.diff_clusters) == 3
     assert result.diff_clusters[0].id == "D1"
+    assert "bucketed as" in result.diff_clusters[0].summary
     assert any(
         cluster.change_type == DiffChangeType.MODIFIED_LOSS for cluster in result.diff_clusters
     )
     assert any(cluster.label == "Low-rank adaptation modules" for cluster in result.diff_clusters)
+
+
+def test_live_repo_diff_analyzer_filters_docs_and_lockfiles(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    base_repo = tmp_path / "base-filtered"
+    target_repo = tmp_path / "target-filtered"
+    init_git_repo(
+        base_repo,
+        {
+            "src/core.py": "def train():\n    return 'base'\n",
+            "README.md": "# Base\n",
+        },
+    )
+    init_git_repo(
+        target_repo,
+        {
+            "src/core.py": "def train():\n    return 'updated training loop'\n",
+            "README.md": "# Updated docs\n",
+            "docs/guide.md": "documentation only\n",
+            "poetry.lock": "lockfile\n",
+        },
+    )
+
+    analyzer = LiveRepoDiffAnalyzer(
+        repo_mirror=StaticRepoMirror(
+            {
+                "https://github.com/example/base-filtered": base_repo,
+                "https://github.com/example/target-filtered": target_repo,
+            }
+        ),
+        settings=repo_settings,
+    )
+    result = analyzer.analyze(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2106.09685 LoRA",
+            repo_url="https://github.com/example/target-filtered",
+        ),
+        BaseRepoCandidate(
+            repo_url="https://github.com/example/base-filtered",
+            strategy="readme_declaration",
+            confidence=0.9,
+            evidence="test",
+        ),
+        [
+            PaperContribution(
+                id="C1",
+                title="Training changes",
+                section="Section 3",
+                keywords=["training", "train"],
+                impl_hints=["Update training flow."],
+            )
+        ],
+    )
+
+    assert len(result.diff_clusters) == 1
+    assert result.diff_clusters[0].files == ["src/core.py"]
 
 
 def test_repo_tracer_uses_live_code_fingerprint_candidates(
@@ -228,3 +308,77 @@ def test_repo_tracer_uses_live_code_fingerprint_candidates(
     assert trace_output.selected_base_repo.strategy == "code_fingerprint"
     assert trace_output.selected_base_repo.repo_url == "https://github.com/openai/triton"
     assert any(candidate.strategy == "code_fingerprint" for candidate in trace_output.candidates)
+
+
+def test_analysis_service_can_run_without_fixture_primary_path(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    target_repo = tmp_path / "target-service"
+    base_repo = tmp_path / "base-service"
+    init_git_repo(
+        target_repo,
+        {
+            "src/kernel.py": (
+                "import triton\n\n"
+                "def attention_kernel(block_size, num_warps):\n"
+                "    io_aware_attention_kernel = block_size + num_warps\n"
+                "    return triton.jit(io_aware_attention_kernel)\n"
+            )
+        },
+    )
+    init_git_repo(
+        base_repo,
+        {
+            "src/triton_kernel.py": (
+                "import triton\n\n"
+                "def attention_kernel(block_size, num_warps):\n"
+                "    return triton.jit(block_size)\n"
+            )
+        },
+    )
+
+    paper_document = PaperDocument(
+        source_kind=PaperSourceKind.ARXIV,
+        source_ref="https://arxiv.org/abs/2205.14135",
+        title="Flash Attention",
+        abstract="IO-aware fused attention kernel with Triton-like execution patterns.",
+        sections=[
+            PaperSection(
+                heading="Abstract",
+                text="IO-aware fused attention kernel with Triton-like execution patterns.",
+            )
+        ],
+        text="IO-aware fused attention kernel with Triton-like execution patterns.",
+    )
+    repo_mapping = {
+        "https://github.com/example/target-service": target_repo,
+        "https://github.com/openai/triton": base_repo,
+    }
+    service = AnalysisService(
+        paper_source_fetcher=StaticPaperSourceFetcher(paper_document),
+        paper_parser=HeuristicPaperParser(),
+        repo_tracer=StrategyDrivenRepoTracer(
+            repo_metadata_provider=EmptyRepoMetadataProvider(),
+            repo_mirror=StaticRepoMirror(repo_mapping),
+            settings=repo_settings,
+        ),
+        diff_analyzer=LiveRepoDiffAnalyzer(
+            repo_mirror=StaticRepoMirror(repo_mapping),
+            settings=repo_settings,
+        ),
+        contribution_mapper=FixtureContributionMapper(),
+    )
+    result = service.analyze(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2205.14135 Flash Attention",
+            repo_url="https://github.com/example/target-service",
+        )
+    )
+
+    assert result.metadata.paper_fetch_mode == ProcessorMode.REMOTE_FETCH
+    assert result.metadata.repo_tracer_mode == ProcessorMode.STRATEGY_CHAIN
+    assert result.metadata.diff_analyzer_mode == ProcessorMode.HEURISTIC
+    assert result.metadata.contribution_mapper_mode == ProcessorMode.HEURISTIC
+    assert result.metadata.selected_repo_strategy in {"paper_mention", "code_fingerprint"}
+    assert result.diff_clusters

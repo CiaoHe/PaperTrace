@@ -16,6 +16,17 @@ function formatEnumLabel(value: string): string {
   return value.replaceAll("_", " ");
 }
 
+function readOptionalStringArray(
+  value: AnalysisResult,
+  key: "unmatched_contribution_ids" | "unmatched_diff_cluster_ids",
+): string[] {
+  if (!(key in value)) {
+    return [];
+  }
+  const nextValue = value[key];
+  return Array.isArray(nextValue) ? nextValue : [];
+}
+
 export function AnalysisForm() {
   const paperSourceId = useId();
   const repoUrlId = useId();
@@ -27,6 +38,12 @@ export function AnalysisForm() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const unmatchedContributionIds = result
+    ? readOptionalStringArray(result, "unmatched_contribution_ids")
+    : [];
+  const unmatchedDiffClusterIds = result
+    ? readOptionalStringArray(result, "unmatched_diff_cluster_ids")
+    : [];
 
   useEffect(() => {
     void (async () => {
@@ -362,23 +379,53 @@ export function AnalysisForm() {
 
               <div>
                 <h3>Contribution mappings</h3>
-                <div className="list">
-                  {result.mappings.map((mapping) => (
-                    <div
-                      className="item"
-                      key={`${mapping.diff_cluster_id}-${mapping.contribution_id}`}
-                    >
-                      <h4>
-                        {mapping.diff_cluster_id} → {mapping.contribution_id}
-                      </h4>
-                      <p>
-                        confidence {mapping.confidence.toFixed(2)} · {mapping.completeness}
-                      </p>
-                      <p>{mapping.evidence}</p>
-                    </div>
-                  ))}
-                </div>
+                {result.mappings.length > 0 ? (
+                  <div className="list">
+                    {result.mappings.map((mapping) => (
+                      <div
+                        className="item"
+                        key={`${mapping.diff_cluster_id}-${mapping.contribution_id}`}
+                      >
+                        <h4>
+                          {mapping.diff_cluster_id} → {mapping.contribution_id}
+                        </h4>
+                        <p>
+                          confidence {mapping.confidence.toFixed(2)} · {mapping.completeness}
+                        </p>
+                        <p>{mapping.evidence}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="muted">No confident mappings yet for this run.</p>
+                )}
               </div>
+
+              {unmatchedContributionIds.length > 0 ? (
+                <div>
+                  <h3>Unmatched contributions</h3>
+                  <div className="list">
+                    {unmatchedContributionIds.map((contributionId: string) => (
+                      <div className="warning" key={contributionId}>
+                        {contributionId}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {unmatchedDiffClusterIds.length > 0 ? (
+                <div>
+                  <h3>Unmatched diff clusters</h3>
+                  <div className="list">
+                    {unmatchedDiffClusterIds.map((clusterId: string) => (
+                      <div className="warning" key={clusterId}>
+                        {clusterId}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
 
               {result.metadata.fallback_notes.length > 0 ? (
                 <div>

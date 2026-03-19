@@ -117,6 +117,8 @@ class AnalysisResult(BaseModel):
     contributions: list[PaperContribution]
     diff_clusters: list[DiffCluster]
     mappings: list[ContributionMapping]
+    unmatched_contribution_ids: list[str] = Field(default_factory=list)
+    unmatched_diff_cluster_ids: list[str] = Field(default_factory=list)
     metadata: AnalysisRuntimeMetadata
     warnings: list[str]
 

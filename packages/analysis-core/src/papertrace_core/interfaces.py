@@ -55,6 +55,8 @@ class DiffOutput:
 @dataclass(frozen=True)
 class MappingOutput:
     mappings: list[ContributionMapping]
+    unmatched_contribution_ids: list[str]
+    unmatched_diff_cluster_ids: list[str]
     mode: ProcessorMode
     warnings: list[str]
 

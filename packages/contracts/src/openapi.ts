@@ -110,6 +110,10 @@ export interface components {
             diff_clusters: components["schemas"]["DiffCluster"][];
             /** Mappings */
             mappings: components["schemas"]["ContributionMapping"][];
+            /** Unmatched Contribution Ids */
+            unmatched_contribution_ids?: string[];
+            /** Unmatched Diff Cluster Ids */
+            unmatched_diff_cluster_ids?: string[];
             metadata: components["schemas"]["AnalysisRuntimeMetadata"];
             /** Warnings */
             warnings: string[];

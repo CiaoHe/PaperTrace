@@ -6,6 +6,7 @@ from papertrace_core.heuristics import infer_contributions, infer_mappings
 from papertrace_core.models import (
     AnalysisRequest,
     BaseRepoCandidate,
+    PaperContribution,
     PaperSourceKind,
     ProcessorMode,
 )
@@ -146,6 +147,7 @@ def test_infer_mappings_matches_lora_clusters_to_contributions() -> None:
     assert len(mappings) == 2
     assert mappings[0].diff_cluster_id == "D1"
     assert mappings[0].contribution_id == "C1"
+    assert "cluster files:" in mappings[0].evidence
 
 
 def test_service_records_fallback_notes_when_llm_returns_empty_payloads() -> None:
@@ -209,3 +211,62 @@ def test_repo_tracer_extracts_repo_mentions_from_paper_document_text() -> None:
 
     assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
     assert any(candidate.strategy == "paper_mention" for candidate in trace_output.candidates)
+
+
+def test_contribution_mapper_preserves_unmatched_items_without_fixture_fallback() -> None:
+    request = AnalysisRequest(
+        paper_source="https://arxiv.org/abs/2205.14135 Flash Attention",
+        repo_url="https://github.com/Dao-AILab/flash-attention",
+    )
+    mapper = FixtureContributionMapper()
+
+    output = mapper.map(
+        request,
+        contributions=[
+            load_golden_case("flash-attention").contributions[0],
+            PaperContribution(
+                id="C2",
+                title="Offline cache warmup",
+                section="Appendix",
+                keywords=["cache", "warmup"],
+                impl_hints=["Add a cache warmup stage before training."],
+            ),
+        ],
+        diff_clusters=load_golden_case("flash-attention").diff_clusters,
+    )
+
+    assert output.mode == ProcessorMode.HEURISTIC
+    assert output.mappings
+    assert output.unmatched_contribution_ids == ["C2"]
+    assert output.unmatched_diff_cluster_ids == []
+
+
+def test_contribution_mapper_returns_empty_matches_with_explicit_unmatched_ids() -> None:
+    request = AnalysisRequest(
+        paper_source="https://arxiv.org/abs/2205.14135 Flash Attention",
+        repo_url="https://github.com/Dao-AILab/flash-attention",
+    )
+    mapper = FixtureContributionMapper()
+
+    output = mapper.map(
+        request,
+        contributions=load_golden_case("flash-attention").contributions,
+        diff_clusters=[
+            load_golden_case("flash-attention")
+            .diff_clusters[0]
+            .model_copy(
+                update={
+                    "id": "D9",
+                    "label": "Packaging updates",
+                    "summary": "Packaging updates inferred from setup.py.",
+                    "files": ["setup.py"],
+                }
+            )
+        ],
+    )
+
+    assert output.mode == ProcessorMode.HEURISTIC
+    assert output.mappings == []
+    assert output.unmatched_contribution_ids == ["C1"]
+    assert output.unmatched_diff_cluster_ids == ["D9"]
+    assert "no confident heuristic matches" in " ".join(output.warnings).lower()

@@ -51,6 +51,22 @@ class Settings(BaseSettings):
     repo_clone_timeout_seconds: float = Field(default=45.0, alias="REPO_CLONE_TIMEOUT_SECONDS")
     repo_max_file_size_bytes: int = Field(default=200_000, alias="REPO_MAX_FILE_SIZE_BYTES")
     repo_max_files: int = Field(default=200, alias="REPO_MAX_FILES")
+    repo_analysis_exclude_dirs: tuple[str, ...] = Field(
+        default=("docs", "doc", "examples", "notebooks", "assets", ".github"),
+        alias="REPO_ANALYSIS_EXCLUDE_DIRS",
+    )
+    repo_analysis_exclude_filenames: tuple[str, ...] = Field(
+        default=(
+            "readme.md",
+            "license",
+            "pnpm-lock.yaml",
+            "package-lock.json",
+            "yarn.lock",
+            "poetry.lock",
+            "uv.lock",
+        ),
+        alias="REPO_ANALYSIS_EXCLUDE_FILENAMES",
+    )
     repo_analysis_include_dirs: tuple[str, ...] = Field(
         default=(),
         alias="REPO_ANALYSIS_INCLUDE_DIRS",
@@ -70,6 +86,7 @@ class Settings(BaseSettings):
             ".cc",
             ".cpp",
             ".h",
+            ".rs",
         ),
         alias="REPO_ANALYSIS_EXTENSIONS",
     )
