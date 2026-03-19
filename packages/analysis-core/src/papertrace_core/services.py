@@ -9,7 +9,6 @@ from papertrace_core.cases import detect_case_slug
 from papertrace_core.fixtures import (
     load_golden_case,
     load_paper_fixture,
-    load_repo_fixture,
 )
 from papertrace_core.heuristics import infer_contributions, infer_mappings
 from papertrace_core.inputs import detect_paper_source_kind
@@ -20,6 +19,7 @@ from papertrace_core.interfaces import (
     MappingOutput,
     PaperParser,
     ParseOutput,
+    RepoMetadataProvider,
     RepoMirror,
     RepoTracer,
     TraceOutput,
@@ -34,6 +34,12 @@ from papertrace_core.models import (
     DiffCluster,
     PaperContribution,
     ProcessorMode,
+)
+from papertrace_core.repo_metadata import (
+    ChainedRepoMetadataProvider,
+    FixtureRepoMetadataProvider,
+    GitHubRepoMetadataProvider,
+    repo_aliases,
 )
 from papertrace_core.repos import RepoAccessError, ShallowGitRepoMirror
 from papertrace_core.settings import Settings, get_settings
@@ -215,7 +221,86 @@ def dedupe_repo_candidates(candidates: list[BaseRepoCandidate]) -> list[BaseRepo
     return sort_repo_candidates(list(by_repo_url.values()))
 
 
+def build_readme_candidates(
+    request: AnalysisRequest,
+    readme_haystack: str,
+    paper_candidates: list[BaseRepoCandidate],
+    golden_candidates: list[BaseRepoCandidate],
+) -> list[BaseRepoCandidate]:
+    candidates: list[BaseRepoCandidate] = []
+    declaration_match = any(pattern.search(readme_haystack) for pattern in DECLARATION_PATTERNS)
+
+    for candidate in paper_candidates:
+        aliases = repo_aliases(candidate.repo_url)
+        if candidate.repo_url.lower() in readme_haystack or any(
+            alias in readme_haystack for alias in aliases
+        ):
+            evidence = (
+                f"Repository README declares an upstream relationship with {candidate.repo_url}."
+                if declaration_match
+                else f"Repository README references {candidate.repo_url}."
+            )
+            candidates.append(
+                BaseRepoCandidate(
+                    repo_url=candidate.repo_url,
+                    strategy="readme_declaration",
+                    confidence=min(candidate.confidence + 0.02, 0.98),
+                    evidence=evidence,
+                )
+            )
+
+    derived_readme_targets = [
+        candidate.repo_url
+        for candidate in golden_candidates
+        if candidate.repo_url != request.repo_url
+    ]
+    for repo_url in derived_readme_targets:
+        aliases = repo_aliases(repo_url)
+        if repo_url.lower() not in readme_haystack and not any(
+            alias in readme_haystack for alias in aliases
+        ):
+            continue
+        evidence = (
+            f"Repository README references the {aliases[0]} codebase in an upstream declaration."
+            if declaration_match
+            else f"Repository README references the {aliases[0]} codebase."
+        )
+        candidates.append(
+            BaseRepoCandidate(
+                repo_url=repo_url,
+                strategy="readme_declaration",
+                confidence=0.8 if repo_url != request.repo_url else 0.76,
+                evidence=evidence,
+            )
+        )
+
+    if not candidates:
+        request_aliases = repo_aliases(request.repo_url)
+        if request.repo_url.lower() in readme_haystack or any(
+            alias in readme_haystack for alias in request_aliases
+        ):
+            evidence = (
+                "Repository README references the submitted repository ecosystem in an upstream "
+                "declaration."
+                if declaration_match
+                else "Repository README references the submitted repository ecosystem."
+            )
+            candidates.append(
+                BaseRepoCandidate(
+                    repo_url=request.repo_url,
+                    strategy="readme_declaration",
+                    confidence=0.76,
+                    evidence=evidence,
+                )
+            )
+
+    return dedupe_repo_candidates(candidates)
+
+
+@dataclass(frozen=True)
 class StrategyDrivenRepoTracer:
+    repo_metadata_provider: RepoMetadataProvider
+
     def trace(
         self,
         request: AnalysisRequest,
@@ -225,32 +310,38 @@ class StrategyDrivenRepoTracer:
         case_slug = detect_case_slug(request)
         golden = load_golden_case(case_slug)
         paper_fixture = load_paper_fixture(case_slug)
-        repo_fixture = load_repo_fixture(case_slug)
+        metadata_output = self.repo_metadata_provider.fetch(request)
+        warnings = list(metadata_output.warnings)
 
         candidates: list[BaseRepoCandidate] = []
-        if repo_fixture.fork_parent:
+        if metadata_output.fork_parent:
             candidates.append(
                 BaseRepoCandidate(
-                    repo_url=repo_fixture.fork_parent,
+                    repo_url=metadata_output.fork_parent,
                     strategy="github_fork",
                     confidence=0.99,
                     evidence="Repository metadata exposes an upstream fork parent.",
                 )
             )
 
-        readme_haystack = f"{repo_fixture.readme}\n{repo_fixture.notes}".lower()
-        for mention in repo_fixture.explicit_mentions:
-            if mention.alias.lower() in readme_haystack or any(
-                pattern.search(readme_haystack) for pattern in DECLARATION_PATTERNS
-            ):
-                candidates.append(
-                    BaseRepoCandidate(
-                        repo_url=mention.repo_url,
-                        strategy="readme_declaration",
-                        confidence=mention.confidence,
-                        evidence=mention.evidence,
-                    )
-                )
+        paper_candidates = [
+            BaseRepoCandidate(
+                repo_url=mention.repo_url,
+                strategy="paper_mention",
+                confidence=mention.confidence,
+                evidence=mention.evidence,
+            )
+            for mention in paper_fixture.codebase_mentions
+        ]
+        readme_haystack = f"{metadata_output.readme_text}\n{metadata_output.notes}".lower()
+        candidates.extend(
+            build_readme_candidates(
+                request,
+                readme_haystack,
+                paper_candidates,
+                golden.base_repo_candidates,
+            )
+        )
 
         paper_haystack = paper_fixture.text.lower()
         for mention in paper_fixture.codebase_mentions:
@@ -287,7 +378,7 @@ class StrategyDrivenRepoTracer:
             selected_base_repo=deduped[0],
             candidates=deduped,
             mode=ProcessorMode.STRATEGY_CHAIN,
-            warnings=[],
+            warnings=warnings,
         )
 
 
@@ -469,6 +560,14 @@ def build_default_analysis_service() -> AnalysisService:
     settings = get_settings()
     llm_client = build_llm_client(settings)
     diff_analyzer: DiffAnalyzer
+    repo_tracer_provider: RepoMetadataProvider
+    if settings.enable_live_repo_trace:
+        repo_tracer_provider = ChainedRepoMetadataProvider(
+            primary=GitHubRepoMetadataProvider(settings),
+            fallback=FixtureRepoMetadataProvider(),
+        )
+    else:
+        repo_tracer_provider = FixtureRepoMetadataProvider()
     if settings.enable_live_repo_analysis:
         diff_analyzer = LiveRepoDiffAnalyzer(
             repo_mirror=ShallowGitRepoMirror(settings),
@@ -478,7 +577,7 @@ def build_default_analysis_service() -> AnalysisService:
         diff_analyzer = FixtureDiffAnalyzer()
     return AnalysisService(
         paper_parser=FixturePaperParser(llm_client=llm_client),
-        repo_tracer=StrategyDrivenRepoTracer(),
+        repo_tracer=StrategyDrivenRepoTracer(repo_metadata_provider=repo_tracer_provider),
         diff_analyzer=diff_analyzer,
         contribution_mapper=FixtureContributionMapper(llm_client=llm_client),
     )

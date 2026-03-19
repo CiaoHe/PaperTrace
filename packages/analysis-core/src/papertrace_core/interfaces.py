@@ -30,6 +30,14 @@ class TraceOutput:
 
 
 @dataclass(frozen=True)
+class RepoMetadataOutput:
+    fork_parent: str | None
+    readme_text: str
+    notes: str
+    warnings: list[str]
+
+
+@dataclass(frozen=True)
 class DiffOutput:
     diff_clusters: list[DiffCluster]
     mode: ProcessorMode
@@ -53,6 +61,10 @@ class RepoTracer(Protocol):
         request: AnalysisRequest,
         contributions: list[PaperContribution],
     ) -> TraceOutput: ...
+
+
+class RepoMetadataProvider(Protocol):
+    def fetch(self, request: AnalysisRequest) -> RepoMetadataOutput: ...
 
 
 class DiffAnalyzer(Protocol):

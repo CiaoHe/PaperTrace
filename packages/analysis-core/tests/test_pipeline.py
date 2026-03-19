@@ -10,6 +10,7 @@ from papertrace_core.models import (
     ProcessorMode,
 )
 from papertrace_core.pipeline import run_analysis
+from papertrace_core.repo_metadata import FixtureRepoMetadataProvider
 from papertrace_core.services import (
     AnalysisService,
     FixtureContributionMapper,
@@ -77,7 +78,9 @@ def test_repo_tracer_prefers_readme_declaration_over_paper_mention() -> None:
         repo_url="https://github.com/microsoft/LoRA",
     )
 
-    trace_output = StrategyDrivenRepoTracer().trace(request, [])
+    trace_output = StrategyDrivenRepoTracer(
+        repo_metadata_provider=FixtureRepoMetadataProvider()
+    ).trace(request, [])
 
     assert trace_output.selected_base_repo.strategy == "readme_declaration"
     assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
@@ -92,7 +95,9 @@ def test_repo_tracer_falls_back_to_code_fingerprint_when_no_mentions_exist() -> 
         repo_url="https://github.com/Dao-AILab/flash-attention",
     )
 
-    trace_output = StrategyDrivenRepoTracer().trace(request, [])
+    trace_output = StrategyDrivenRepoTracer(
+        repo_metadata_provider=FixtureRepoMetadataProvider()
+    ).trace(request, [])
 
     assert trace_output.selected_base_repo.strategy == "code_fingerprint"
     assert trace_output.candidates[0].repo_url == "https://github.com/openai/triton"
@@ -146,7 +151,7 @@ def test_service_records_fallback_notes_when_llm_returns_empty_payloads() -> Non
     )
     service = AnalysisService(
         paper_parser=FixturePaperParser(llm_client=cast(Any, EmptyLLMClient())),
-        repo_tracer=StrategyDrivenRepoTracer(),
+        repo_tracer=StrategyDrivenRepoTracer(repo_metadata_provider=FixtureRepoMetadataProvider()),
         diff_analyzer=FixtureDiffAnalyzer(),
         contribution_mapper=FixtureContributionMapper(llm_client=cast(Any, EmptyLLMClient())),
     )

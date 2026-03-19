@@ -4,7 +4,7 @@ API_HOST ?= 127.0.0.1
 API_PORT ?= 8000
 WEB_PORT ?= 3000
 
-.PHONY: bootstrap dev lint test e2e down contracts playwright-install
+.PHONY: bootstrap dev lint test smoke e2e down contracts playwright-install
 
 bootstrap:
 	@test -x "$(PYTHON)" || (echo "Missing Python interpreter: $(PYTHON)" && exit 1)
@@ -30,7 +30,10 @@ lint:
 	@pnpm --filter @papertrace/web typecheck
 
 test:
-	@PYTHONPATH="$(PYTHONPATHS)" CELERY_TASK_ALWAYS_EAGER=true DATABASE_URL="sqlite+pysqlite:///$(PWD)/.local/test.db" $(PYTHON) -m pytest
+	@PYTHONPATH="$(PYTHONPATHS)" CELERY_TASK_ALWAYS_EAGER=true DATABASE_URL="sqlite+pysqlite:///$(PWD)/.local/test.db" $(PYTHON) -m pytest -m "not smoke"
+
+smoke:
+	@PYTHONPATH="$(PYTHONPATHS)" $(PYTHON) -m pytest -m smoke
 
 e2e:
 	@cp -n .env.example .env >/dev/null 2>&1 || true
