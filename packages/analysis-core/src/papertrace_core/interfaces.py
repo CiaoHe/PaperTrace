@@ -71,6 +71,7 @@ class RepoTracer(Protocol):
     def trace(
         self,
         request: AnalysisRequest,
+        paper_document: PaperDocument,
         contributions: list[PaperContribution],
     ) -> TraceOutput: ...
 

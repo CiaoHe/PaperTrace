@@ -8,10 +8,9 @@ from pathlib import Path
 from papertrace_core.cases import detect_case_slug
 from papertrace_core.fixtures import (
     load_golden_case,
-    load_paper_fixture,
 )
 from papertrace_core.heuristics import infer_contributions, infer_mappings
-from papertrace_core.inputs import detect_paper_source_kind
+from papertrace_core.inputs import detect_paper_source_kind, normalize_repo_url
 from papertrace_core.interfaces import (
     ContributionMapper,
     DiffAnalyzer,
@@ -59,6 +58,15 @@ STRATEGY_PRIORITY: dict[str, int] = {
     "fallback": 1,
 }
 
+KNOWN_UPSTREAM_ALIAS_MAP: dict[str, str] = {
+    "transformers": "https://github.com/huggingface/transformers",
+    "huggingface/transformers": "https://github.com/huggingface/transformers",
+    "trl": "https://github.com/huggingface/trl",
+    "huggingface/trl": "https://github.com/huggingface/trl",
+    "triton": "https://github.com/openai/triton",
+    "openai/triton": "https://github.com/openai/triton",
+}
+
 DECLARATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bbased on\b", flags=0),
     re.compile(r"\bbuilt on top of\b", flags=0),
@@ -66,6 +74,11 @@ DECLARATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\btransformers\b", flags=0),
     re.compile(r"\btrl\b", flags=0),
 )
+GITHUB_URL_RE = re.compile(r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?")
+IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+SYMBOL_RE = re.compile(r"\b(?:class|def)\s+([A-Za-z_][A-Za-z0-9_]*)")
+IMPORT_RE = re.compile(r"\b(?:from|import)\s+([A-Za-z_][A-Za-z0-9_\.]*)")
+FINGERPRINT_SCORE_THRESHOLD = 0.12
 
 
 def dedupe_preserving_order(items: list[str]) -> list[str]:
@@ -227,11 +240,58 @@ def dedupe_repo_candidates(candidates: list[BaseRepoCandidate]) -> list[BaseRepo
     return sort_repo_candidates(list(by_repo_url.values()))
 
 
+def unique_repo_urls(repo_urls: list[str]) -> list[str]:
+    return list(dict.fromkeys(repo_urls))
+
+
+def known_upstream_repo_urls() -> list[str]:
+    return unique_repo_urls(list(KNOWN_UPSTREAM_ALIAS_MAP.values()))
+
+
+def text_contains_alias(haystack: str, alias: str) -> bool:
+    if "/" in alias:
+        return alias in haystack
+    return re.search(rf"\b{re.escape(alias)}\b", haystack) is not None
+
+
+def build_paper_mention_candidates(paper_document: PaperDocument) -> list[BaseRepoCandidate]:
+    haystack = paper_document.text.lower()
+    candidates: list[BaseRepoCandidate] = []
+
+    for matched_url in GITHUB_URL_RE.findall(paper_document.text):
+        try:
+            repo_url = normalize_repo_url(matched_url)
+        except ValueError:
+            continue
+        candidates.append(
+            BaseRepoCandidate(
+                repo_url=repo_url,
+                strategy="paper_mention",
+                confidence=0.9,
+                evidence=f"Paper text directly references {repo_url}.",
+            )
+        )
+
+    for alias, repo_url in KNOWN_UPSTREAM_ALIAS_MAP.items():
+        if not text_contains_alias(haystack, alias):
+            continue
+        candidates.append(
+            BaseRepoCandidate(
+                repo_url=repo_url,
+                strategy="paper_mention",
+                confidence=0.76 if "/" in alias else 0.7,
+                evidence=f"Paper text mentions the {alias} codebase.",
+            )
+        )
+
+    return dedupe_repo_candidates(candidates)
+
+
 def build_readme_candidates(
     request: AnalysisRequest,
     readme_haystack: str,
     paper_candidates: list[BaseRepoCandidate],
-    golden_candidates: list[BaseRepoCandidate],
+    candidate_repo_urls: list[str],
 ) -> list[BaseRepoCandidate]:
     candidates: list[BaseRepoCandidate] = []
     declaration_match = any(pattern.search(readme_haystack) for pattern in DECLARATION_PATTERNS)
@@ -256,9 +316,7 @@ def build_readme_candidates(
             )
 
     derived_readme_targets = [
-        candidate.repo_url
-        for candidate in golden_candidates
-        if candidate.repo_url != request.repo_url
+        repo_url for repo_url in candidate_repo_urls if repo_url != request.repo_url
     ]
     for repo_url in derived_readme_targets:
         aliases = repo_aliases(repo_url)
@@ -303,19 +361,112 @@ def build_readme_candidates(
     return dedupe_repo_candidates(candidates)
 
 
+def build_snapshot_path_tokens(snapshot: dict[str, str]) -> set[str]:
+    tokens: set[str] = set()
+    for relative_path in snapshot:
+        path = Path(relative_path)
+        tokens.update(part.lower() for part in path.parts if len(part) >= 3)
+        if len(path.stem) >= 3:
+            tokens.add(path.stem.lower())
+    return tokens
+
+
+def build_snapshot_symbol_tokens(snapshot: dict[str, str]) -> set[str]:
+    tokens: set[str] = set()
+    for content in snapshot.values():
+        tokens.update(symbol.lower() for symbol in SYMBOL_RE.findall(content))
+        for imported_name in IMPORT_RE.findall(content):
+            tokens.update(part.lower() for part in imported_name.split(".") if len(part) >= 3)
+        tokens.update(token.lower() for token in IDENTIFIER_RE.findall(content) if len(token) >= 4)
+    return tokens
+
+
+def overlap_ratio(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / min(len(left), len(right))
+
+
+def fingerprint_candidate(
+    target_snapshot: dict[str, str],
+    candidate_snapshot: dict[str, str],
+) -> tuple[float, str]:
+    target_path_tokens = build_snapshot_path_tokens(target_snapshot)
+    candidate_path_tokens = build_snapshot_path_tokens(candidate_snapshot)
+    target_symbol_tokens = build_snapshot_symbol_tokens(target_snapshot)
+    candidate_symbol_tokens = build_snapshot_symbol_tokens(candidate_snapshot)
+
+    path_score = overlap_ratio(target_path_tokens, candidate_path_tokens)
+    symbol_score = overlap_ratio(target_symbol_tokens, candidate_symbol_tokens)
+    combined_score = 0.35 * path_score + 0.65 * symbol_score
+    shared_paths = len(target_path_tokens & candidate_path_tokens)
+    shared_symbols = len(target_symbol_tokens & candidate_symbol_tokens)
+    evidence = (
+        f"Fingerprint overlap found {shared_paths} shared path tokens and "
+        f"{shared_symbols} shared symbol tokens."
+    )
+    return combined_score, evidence
+
+
+def build_code_fingerprint_candidates(
+    request: AnalysisRequest,
+    repo_mirror: RepoMirror | None,
+    settings: Settings | None,
+    candidate_repo_urls: list[str],
+) -> tuple[list[BaseRepoCandidate], list[str]]:
+    if repo_mirror is None or settings is None:
+        return [], []
+
+    try:
+        target_root = repo_mirror.prepare(request.repo_url)
+        target_snapshot = load_repo_snapshot(target_root, settings)
+    except (RepoAccessError, KeyError) as exc:
+        return [], [f"Repo tracer skipped fingerprint analysis: {exc}"]
+
+    fingerprint_candidates: list[BaseRepoCandidate] = []
+    warnings: list[str] = []
+    for candidate_repo_url in candidate_repo_urls:
+        if candidate_repo_url == request.repo_url:
+            continue
+        try:
+            candidate_root = repo_mirror.prepare(candidate_repo_url)
+            candidate_snapshot = load_repo_snapshot(candidate_root, settings)
+        except (RepoAccessError, KeyError) as exc:
+            warnings.append(
+                f"Repo tracer skipped fingerprint candidate {candidate_repo_url}: {exc}"
+            )
+            continue
+
+        score, evidence = fingerprint_candidate(target_snapshot, candidate_snapshot)
+        if score < FINGERPRINT_SCORE_THRESHOLD:
+            continue
+        fingerprint_candidates.append(
+            BaseRepoCandidate(
+                repo_url=candidate_repo_url,
+                strategy="code_fingerprint",
+                confidence=round(min(0.55 + score, 0.92), 2),
+                evidence=evidence,
+            )
+        )
+
+    return dedupe_repo_candidates(fingerprint_candidates), warnings
+
+
 @dataclass(frozen=True)
 class StrategyDrivenRepoTracer:
     repo_metadata_provider: RepoMetadataProvider
+    repo_mirror: RepoMirror | None = None
+    settings: Settings | None = None
 
     def trace(
         self,
         request: AnalysisRequest,
+        paper_document: PaperDocument,
         contributions: list[PaperContribution],
     ) -> TraceOutput:
         del contributions
         case_slug = detect_case_slug(request)
         golden = load_golden_case(case_slug)
-        paper_fixture = load_paper_fixture(case_slug)
         metadata_output = self.repo_metadata_provider.fetch(request)
         warnings = list(metadata_output.warnings)
 
@@ -330,43 +481,33 @@ class StrategyDrivenRepoTracer:
                 )
             )
 
-        paper_candidates = [
-            BaseRepoCandidate(
-                repo_url=mention.repo_url,
-                strategy="paper_mention",
-                confidence=mention.confidence,
-                evidence=mention.evidence,
-            )
-            for mention in paper_fixture.codebase_mentions
-        ]
+        paper_candidates = build_paper_mention_candidates(paper_document)
+        candidates.extend(paper_candidates)
+        candidate_repo_urls = unique_repo_urls(
+            [metadata_output.fork_parent]
+            if metadata_output.fork_parent
+            else []
+            + [candidate.repo_url for candidate in paper_candidates]
+            + known_upstream_repo_urls()
+        )
         readme_haystack = f"{metadata_output.readme_text}\n{metadata_output.notes}".lower()
         candidates.extend(
             build_readme_candidates(
                 request,
                 readme_haystack,
                 paper_candidates,
-                golden.base_repo_candidates,
+                candidate_repo_urls,
             )
         )
 
-        paper_haystack = paper_fixture.text.lower()
-        for mention in paper_fixture.codebase_mentions:
-            if mention.alias.lower() in paper_haystack:
-                candidates.append(
-                    BaseRepoCandidate(
-                        repo_url=mention.repo_url,
-                        strategy="paper_mention",
-                        confidence=mention.confidence,
-                        evidence=mention.evidence,
-                    )
-                )
-
-        if not any(candidate.strategy == "code_fingerprint" for candidate in candidates):
-            candidates.extend(
-                candidate
-                for candidate in golden.base_repo_candidates
-                if candidate.strategy == "code_fingerprint"
-            )
+        fingerprint_candidates, fingerprint_warnings = build_code_fingerprint_candidates(
+            request,
+            self.repo_mirror,
+            self.settings,
+            candidate_repo_urls,
+        )
+        warnings.extend(fingerprint_warnings)
+        candidates.extend(fingerprint_candidates)
 
         if not candidates:
             candidates.extend(
@@ -523,7 +664,11 @@ class AnalysisService:
         fixture = load_golden_case(detect_case_slug(request))
         fetch_output = self.paper_source_fetcher.fetch(request)
         parse_output = self.paper_parser.parse(request, fetch_output.paper_document)
-        trace_output = self.repo_tracer.trace(request, parse_output.contributions)
+        trace_output = self.repo_tracer.trace(
+            request,
+            fetch_output.paper_document,
+            parse_output.contributions,
+        )
         diff_output = self.diff_analyzer.analyze(
             request,
             trace_output.selected_base_repo,
@@ -572,6 +717,7 @@ def build_default_analysis_service() -> AnalysisService:
     paper_source_fetcher: PaperSourceFetcher
     diff_analyzer: DiffAnalyzer
     repo_tracer_provider: RepoMetadataProvider
+    repo_mirror: RepoMirror | None = None
     if settings.enable_live_paper_fetch:
         paper_source_fetcher = ChainedPaperSourceFetcher(
             primary=ArxivPaperSourceFetcher(settings),
@@ -586,9 +732,11 @@ def build_default_analysis_service() -> AnalysisService:
         )
     else:
         repo_tracer_provider = FixtureRepoMetadataProvider()
+    if settings.enable_live_repo_trace or settings.enable_live_repo_analysis:
+        repo_mirror = ShallowGitRepoMirror(settings)
     if settings.enable_live_repo_analysis:
         diff_analyzer = LiveRepoDiffAnalyzer(
-            repo_mirror=ShallowGitRepoMirror(settings),
+            repo_mirror=repo_mirror or ShallowGitRepoMirror(settings),
             settings=settings,
         )
     else:
@@ -596,7 +744,11 @@ def build_default_analysis_service() -> AnalysisService:
     return AnalysisService(
         paper_source_fetcher=paper_source_fetcher,
         paper_parser=HeuristicPaperParser(llm_client=llm_client),
-        repo_tracer=StrategyDrivenRepoTracer(repo_metadata_provider=repo_tracer_provider),
+        repo_tracer=StrategyDrivenRepoTracer(
+            repo_metadata_provider=repo_tracer_provider,
+            repo_mirror=repo_mirror,
+            settings=settings,
+        ),
         diff_analyzer=diff_analyzer,
         contribution_mapper=FixtureContributionMapper(llm_client=llm_client),
     )

@@ -63,7 +63,7 @@ def test_default_analysis_service_recomposes_fixture_result() -> None:
 
     assert result.case_slug == "flash-attention"
     assert result.contributions[0].id == "C1"
-    assert result.base_repo_candidates[0].strategy == "code_fingerprint"
+    assert result.base_repo_candidates[0].strategy == "paper_mention"
     assert result.metadata.paper_source_kind == PaperSourceKind.ARXIV
     assert result.metadata.paper_fetch_mode == ProcessorMode.FIXTURE
     assert result.metadata.parser_mode == ProcessorMode.HEURISTIC
@@ -79,10 +79,11 @@ def test_repo_tracer_prefers_readme_declaration_over_paper_mention() -> None:
         paper_source="https://arxiv.org/abs/2106.09685 LoRA",
         repo_url="https://github.com/microsoft/LoRA",
     )
+    paper_document = paper_document_from_fixture(request, load_paper_fixture("lora"))
 
     trace_output = StrategyDrivenRepoTracer(
         repo_metadata_provider=FixtureRepoMetadataProvider()
-    ).trace(request, [])
+    ).trace(request, paper_document, [])
 
     assert trace_output.selected_base_repo.strategy == "readme_declaration"
     assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
@@ -96,12 +97,13 @@ def test_repo_tracer_falls_back_to_code_fingerprint_when_no_mentions_exist() -> 
         paper_source="https://arxiv.org/abs/2205.14135 Flash Attention",
         repo_url="https://github.com/Dao-AILab/flash-attention",
     )
+    paper_document = paper_document_from_fixture(request, load_paper_fixture("flash-attention"))
 
     trace_output = StrategyDrivenRepoTracer(
         repo_metadata_provider=FixtureRepoMetadataProvider()
-    ).trace(request, [])
+    ).trace(request, paper_document, [])
 
-    assert trace_output.selected_base_repo.strategy == "code_fingerprint"
+    assert trace_output.selected_base_repo.strategy == "paper_mention"
     assert trace_output.candidates[0].repo_url == "https://github.com/openai/triton"
 
 
@@ -185,3 +187,25 @@ def test_heuristic_paper_parser_uses_fetched_paper_document() -> None:
     assert result.mode == ProcessorMode.HEURISTIC
     assert result.contributions
     assert result.contributions[0].id == "C1"
+
+
+def test_repo_tracer_extracts_repo_mentions_from_paper_document_text() -> None:
+    request = AnalysisRequest(
+        paper_source="https://arxiv.org/abs/2106.09685 LoRA",
+        repo_url="https://github.com/example/project",
+    )
+    paper_document = paper_document_from_fixture(request, load_paper_fixture("lora")).model_copy(
+        update={
+            "text": (
+                "Our implementation builds on top of "
+                "https://github.com/huggingface/transformers and TRL training utilities."
+            )
+        }
+    )
+
+    trace_output = StrategyDrivenRepoTracer(
+        repo_metadata_provider=FixtureRepoMetadataProvider()
+    ).trace(request, paper_document, [])
+
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
+    assert any(candidate.strategy == "paper_mention" for candidate in trace_output.candidates)
