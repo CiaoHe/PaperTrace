@@ -1,9 +1,9 @@
 "use client";
 
-import type { AnalysisResult, GoldenCaseExample, JobStatusResponse } from "@papertrace/contracts";
+import type { AnalysisResult, GoldenCaseExample, HealthResponse, JobStatusResponse } from "@papertrace/contracts";
 import { useEffect, useId, useState } from "react";
 
-import { createAnalysis, getAnalysis, getAnalysisResult, getExamples, getJobs } from "@/lib/api";
+import { createAnalysis, getAnalysis, getAnalysisResult, getExamples, getHealth, getJobs } from "@/lib/api";
 
 const DEFAULT_PAPER = "https://arxiv.org/abs/2106.09685 LoRA";
 const DEFAULT_REPO = "https://github.com/microsoft/LoRA";
@@ -32,6 +32,7 @@ export function AnalysisForm() {
   const repoUrlId = useId();
   const [paperSource, setPaperSource] = useState(DEFAULT_PAPER);
   const [repoUrl, setRepoUrl] = useState(DEFAULT_REPO);
+  const [health, setHealth] = useState<HealthResponse | null>(null);
   const [examples, setExamples] = useState<GoldenCaseExample[]>([]);
   const [jobs, setJobs] = useState<JobStatusResponse[]>([]);
   const [job, setJob] = useState<JobStatusResponse | null>(null);
@@ -44,10 +45,12 @@ export function AnalysisForm() {
   useEffect(() => {
     void (async () => {
       try {
-        const [nextExamples, nextJobs] = await Promise.all([getExamples(), getJobs()]);
+        const [nextHealth, nextExamples, nextJobs] = await Promise.all([getHealth(), getExamples(), getJobs()]);
+        setHealth(nextHealth);
         setExamples(nextExamples);
         setJobs(nextJobs.slice(0, 5));
       } catch {
+        setHealth(null);
         setExamples([]);
         setJobs([]);
       }
@@ -231,6 +234,34 @@ export function AnalysisForm() {
             </div>
           </div>
         </div>
+
+        {health ? (
+          <div className="panel">
+            <div className="panel-inner">
+              <h3>API runtime config</h3>
+              <div className="list">
+                <div className="item">
+                  <h4>Execution defaults</h4>
+                  <p>
+                    live by default: {String(health.live_by_default)} · paper fetch: {String(health.live_paper_fetch)} ·
+                    repo trace: {String(health.live_repo_trace)} · repo analysis: {String(health.live_repo_analysis)}
+                  </p>
+                </div>
+                <div className="item">
+                  <h4>Integrations</h4>
+                  <p>
+                    database: {health.database} · queue: {health.queue_mode} · llm configured:{" "}
+                    {String(health.llm_configured)}
+                  </p>
+                </div>
+                <div className="item">
+                  <h4>Paper source kinds</h4>
+                  <p>{health.supported_paper_source_kinds.map(formatEnumLabel).join(" · ")}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         <div className="panel">
           <div className="panel-inner">

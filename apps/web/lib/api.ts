@@ -4,6 +4,7 @@ import type {
   CreateAnalysisResponse,
   ExamplesResponse,
   GoldenCaseExample,
+  HealthResponse,
   JobStatusResponse,
   JobsResponse,
   ResultResponse,
@@ -63,4 +64,11 @@ export async function getJobs(): Promise<JobStatusResponse[]> {
   });
   const body = await parseResponse<JobsResponse>(response);
   return body.jobs;
+}
+
+export async function getHealth(): Promise<HealthResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/health`, {
+    cache: "no-store",
+  });
+  return parseResponse<HealthResponse>(response);
 }

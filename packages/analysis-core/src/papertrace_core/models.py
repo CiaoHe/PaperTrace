@@ -141,6 +141,12 @@ class HealthResponse(BaseModel):
     status: str
     database: str
     queue_mode: str
+    live_by_default: bool
+    live_paper_fetch: bool
+    live_repo_trace: bool
+    live_repo_analysis: bool
+    llm_configured: bool
+    supported_paper_source_kinds: list[PaperSourceKind]
 
 
 class GoldenCaseExample(BaseModel):

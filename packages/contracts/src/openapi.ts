@@ -212,6 +212,18 @@ export interface components {
             database: string;
             /** Queue Mode */
             queue_mode: string;
+            /** Live By Default */
+            live_by_default: boolean;
+            /** Live Paper Fetch */
+            live_paper_fetch: boolean;
+            /** Live Repo Trace */
+            live_repo_trace: boolean;
+            /** Live Repo Analysis */
+            live_repo_analysis: boolean;
+            /** Llm Configured */
+            llm_configured: boolean;
+            /** Supported Paper Source Kinds */
+            supported_paper_source_kinds: components["schemas"]["PaperSourceKind"][];
         };
         /**
          * JobStage

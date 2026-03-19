@@ -40,6 +40,8 @@ from papertrace_core.paper_sources import (
     ArxivPaperSourceFetcher,
     ChainedPaperSourceFetcher,
     FixturePaperSourceFetcher,
+    PdfPaperSourceFetcher,
+    SourceAwarePaperSourceFetcher,
 )
 from papertrace_core.repo_metadata import (
     ChainedRepoMetadataProvider,
@@ -741,7 +743,10 @@ def build_default_analysis_service() -> AnalysisService:
     repo_mirror: RepoMirror | None = None
     if settings.use_live_paper_fetch():
         paper_source_fetcher = ChainedPaperSourceFetcher(
-            primary=ArxivPaperSourceFetcher(settings),
+            primary=SourceAwarePaperSourceFetcher(
+                arxiv_fetcher=ArxivPaperSourceFetcher(settings),
+                pdf_fetcher=PdfPaperSourceFetcher(settings),
+            ),
             fallback=FixturePaperSourceFetcher(),
         )
     else:

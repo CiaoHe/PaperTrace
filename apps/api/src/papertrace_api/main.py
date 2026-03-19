@@ -7,7 +7,8 @@ from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from papertrace_core.cases import example_payloads
 from papertrace_core.inputs import normalize_paper_source, normalize_repo_url
-from papertrace_core.models import AnalysisRequest, HealthResponse
+from papertrace_core.models import AnalysisRequest, HealthResponse, PaperSourceKind
+from papertrace_core.settings import get_settings
 from papertrace_core.storage import (
     create_job,
     get_engine,
@@ -53,7 +54,23 @@ def health() -> HealthResponse:
     engine = get_engine()
     database_name = engine.url.get_backend_name()
     queue_mode = "celery"
-    return HealthResponse(status="ok", database=database_name, queue_mode=queue_mode)
+    settings = get_settings()
+    return HealthResponse(
+        status="ok",
+        database=database_name,
+        queue_mode=queue_mode,
+        live_by_default=settings.enable_live_by_default,
+        live_paper_fetch=settings.use_live_paper_fetch(),
+        live_repo_trace=settings.use_live_repo_trace(),
+        live_repo_analysis=settings.use_live_repo_analysis(),
+        llm_configured=bool(settings.llm_base_url and settings.llm_model),
+        supported_paper_source_kinds=[
+            PaperSourceKind.ARXIV,
+            PaperSourceKind.PDF_URL,
+            PaperSourceKind.PDF_FILE,
+            PaperSourceKind.TEXT_REFERENCE,
+        ],
+    )
 
 
 @app.head("/api/v1/health", status_code=status.HTTP_200_OK)

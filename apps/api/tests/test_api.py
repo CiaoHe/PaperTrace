@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 os.environ["CELERY_TASK_ALWAYS_EAGER"] = "true"
 os.environ["DATABASE_URL"] = f"sqlite+pysqlite:///{Path('.local/test-api.db').resolve()}"
+os.environ["ENABLE_LIVE_BY_DEFAULT"] = "false"
 
 from papertrace_api.main import app
 
@@ -18,6 +19,11 @@ def test_health_endpoint() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "ok"
+    assert payload["live_by_default"] is False
+    assert payload["live_paper_fetch"] is False
+    assert payload["live_repo_trace"] is False
+    assert payload["live_repo_analysis"] is False
+    assert "pdf_url" in payload["supported_paper_source_kinds"]
 
 
 def test_examples_endpoint_returns_seed_cases() -> None:
