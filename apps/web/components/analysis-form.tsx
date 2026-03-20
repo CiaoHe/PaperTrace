@@ -106,20 +106,13 @@ export function AnalysisForm() {
             paperSourceKind: "pdf_file",
             repoUrl,
           })
-        : await createAnalysis(
-            paperSourceKind === "arxiv" && paperSource.trim().includes("arxiv.org/")
-              ? {
-                  paper_source: paperSource,
-                  repo_url: repoUrl,
-                }
-              : {
-                  repo_url: repoUrl,
-                  paper_input: {
-                    source_kind: paperSourceKind,
-                    source_ref: paperSource,
-                  },
-                },
-          );
+        : await createAnalysis({
+            repo_url: repoUrl,
+            paper_input: {
+              source_kind: paperSourceKind,
+              source_ref: paperSource,
+            },
+          });
       setJob(createdJob);
       setJobs((currentJobs) => [createdJob, ...currentJobs.filter((item) => item.id !== createdJob.id)].slice(0, 5));
 

@@ -28,6 +28,7 @@ from papertrace_api.schemas import (
     CreateAnalysisResponse,
     ExamplesResponse,
     JobsResponse,
+    LegacyCreateAnalysisRequest,
     ResultResponse,
 )
 from papertrace_api.uploads import persist_uploaded_pdf
@@ -106,27 +107,36 @@ def get_analyses() -> JobsResponse:
                         "anyOf": [
                             {
                                 "type": "object",
-                                "required": ["paper_source", "repo_url"],
-                                "properties": {
-                                    "paper_source": {"type": "string"},
-                                    "repo_url": {"type": "string"},
-                                },
-                            },
-                            {
-                                "type": "object",
                                 "required": ["paper_input", "repo_url"],
                                 "properties": {
                                     "repo_url": {"type": "string"},
                                     "paper_input": {
-                                        "type": "object",
-                                        "required": ["source_kind", "source_ref"],
-                                        "properties": {
-                                            "source_kind": {
-                                                "type": "string",
-                                                "enum": ["arxiv", "pdf_url", "text_reference"],
+                                        "oneOf": [
+                                            {
+                                                "type": "object",
+                                                "required": ["source_kind", "source_ref"],
+                                                "properties": {
+                                                    "source_kind": {"type": "string", "const": "arxiv"},
+                                                    "source_ref": {"type": "string"},
+                                                },
                                             },
-                                            "source_ref": {"type": "string"},
-                                        },
+                                            {
+                                                "type": "object",
+                                                "required": ["source_kind", "source_ref"],
+                                                "properties": {
+                                                    "source_kind": {"type": "string", "const": "pdf_url"},
+                                                    "source_ref": {"type": "string"},
+                                                },
+                                            },
+                                            {
+                                                "type": "object",
+                                                "required": ["source_kind", "source_ref"],
+                                                "properties": {
+                                                    "source_kind": {"type": "string", "const": "text_reference"},
+                                                    "source_ref": {"type": "string"},
+                                                },
+                                            },
+                                        ]
                                     },
                                 },
                             },
@@ -185,13 +195,19 @@ async def create_analysis(
                 repo_url=normalize_repo_url(multipart_payload.repo_url),
             )
         else:
-            payload = CreateAnalysisRequest.model_validate(await request.json())
-            paper_source = (
-                payload.paper_input.source_ref if payload.paper_input is not None else str(payload.paper_source or "")
-            )
+            raw_payload = await request.json()
+            resolved_repo_url: str
+            try:
+                payload = CreateAnalysisRequest.model_validate(raw_payload)
+                paper_source = payload.paper_input.source_ref
+                resolved_repo_url = payload.repo_url
+            except ValidationError:
+                legacy_payload = LegacyCreateAnalysisRequest.model_validate(raw_payload)
+                paper_source = legacy_payload.paper_source
+                resolved_repo_url = legacy_payload.repo_url
             analysis_request = AnalysisRequest(
                 paper_source=normalize_paper_source(paper_source),
-                repo_url=normalize_repo_url(payload.repo_url),
+                repo_url=normalize_repo_url(resolved_repo_url),
             )
     except HTTPException:
         raise

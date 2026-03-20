@@ -83,8 +83,11 @@ def test_list_analyses_endpoint_returns_created_jobs() -> None:
         create_response = client.post(
             "/api/v1/analyses",
             json={
-                "paper_source": "https://arxiv.org/abs/2106.09685 LoRA",
                 "repo_url": "https://github.com/microsoft/LoRA",
+                "paper_input": {
+                    "source_kind": "arxiv",
+                    "source_ref": "https://arxiv.org/abs/2106.09685 LoRA",
+                },
             },
         )
 
@@ -102,8 +105,11 @@ def test_create_analysis_runs_fixture_pipeline() -> None:
         response = client.post(
             "/api/v1/analyses",
             json={
-                "paper_source": "https://arxiv.org/abs/2106.09685 LoRA",
                 "repo_url": "https://github.com/microsoft/LoRA",
+                "paper_input": {
+                    "source_kind": "arxiv",
+                    "source_ref": "https://arxiv.org/abs/2106.09685 LoRA",
+                },
             },
         )
 
@@ -182,9 +188,25 @@ def test_create_analysis_rejects_non_github_repo_url() -> None:
         response = client.post(
             "/api/v1/analyses",
             json={
-                "paper_source": "https://arxiv.org/abs/2106.09685 LoRA",
                 "repo_url": "https://gitlab.com/example/repo",
+                "paper_input": {
+                    "source_kind": "arxiv",
+                    "source_ref": "https://arxiv.org/abs/2106.09685 LoRA",
+                },
             },
         )
 
     assert response.status_code == 422
+
+
+def test_create_analysis_keeps_legacy_paper_source_compatibility() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/analyses",
+            json={
+                "paper_source": "https://arxiv.org/abs/2106.09685 LoRA",
+                "repo_url": "https://github.com/microsoft/LoRA",
+            },
+        )
+
+    assert response.status_code == 202

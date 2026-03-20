@@ -14,14 +14,6 @@ export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.
 
 export type StructuredPaperSourceKind = "arxiv" | "pdf_url" | "text_reference";
 
-export interface StructuredCreateAnalysisRequest {
-  repo_url: string;
-  paper_input: {
-    source_kind: StructuredPaperSourceKind;
-    source_ref: string;
-  };
-}
-
 export interface CreateAnalysisUploadPayload {
   paperFile: File;
   paperSource?: string;
@@ -39,7 +31,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 export async function createAnalysis(
-  payload: CreateAnalysisRequest | StructuredCreateAnalysisRequest | CreateAnalysisUploadPayload,
+  payload: CreateAnalysisRequest | CreateAnalysisUploadPayload,
 ): Promise<JobStatusResponse> {
   const response =
     "paperFile" in payload

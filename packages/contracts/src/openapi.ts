@@ -440,13 +440,18 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    paper_source: string;
-                    repo_url: string;
-                } | {
                     repo_url: string;
                     paper_input: {
-                        /** @enum {string} */
-                        source_kind: "arxiv" | "pdf_url" | "text_reference";
+                        /** @constant */
+                        source_kind: "arxiv";
+                        source_ref: string;
+                    } | {
+                        /** @constant */
+                        source_kind: "pdf_url";
+                        source_ref: string;
+                    } | {
+                        /** @constant */
+                        source_kind: "text_reference";
                         source_ref: string;
                     };
                 };
