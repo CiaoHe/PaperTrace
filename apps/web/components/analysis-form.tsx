@@ -3,10 +3,12 @@
 import type { AnalysisResult, GoldenCaseExample, HealthResponse, JobStatusResponse } from "@papertrace/contracts";
 import { useEffect, useId, useState } from "react";
 
+import type { StructuredPaperSourceKind } from "@/lib/api";
 import { createAnalysis, getAnalysis, getAnalysisResult, getExamples, getHealth, getJobs } from "@/lib/api";
 
 const DEFAULT_PAPER = "https://arxiv.org/abs/2106.09685 LoRA";
 const DEFAULT_REPO = "https://github.com/microsoft/LoRA";
+const DEFAULT_PAPER_SOURCE_KIND: StructuredPaperSourceKind = "arxiv";
 
 function statusClass(status: JobStatusResponse["status"]): string {
   return status === "failed" ? "status failed" : "status";
@@ -31,8 +33,10 @@ export function AnalysisForm() {
   const paperSourceId = useId();
   const paperFileId = useId();
   const repoUrlId = useId();
+  const paperSourceKindId = useId();
   const [paperSource, setPaperSource] = useState(DEFAULT_PAPER);
   const [paperFile, setPaperFile] = useState<File | null>(null);
+  const [paperSourceKind, setPaperSourceKind] = useState<StructuredPaperSourceKind>(DEFAULT_PAPER_SOURCE_KIND);
   const [repoUrl, setRepoUrl] = useState(DEFAULT_REPO);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [examples, setExamples] = useState<GoldenCaseExample[]>([]);
@@ -103,12 +107,23 @@ export function AnalysisForm() {
         ? await createAnalysis({
             paperFile,
             paperSource: paperSource || undefined,
+            paperSourceKind: "pdf_file",
             repoUrl,
           })
-        : await createAnalysis({
-            paper_source: paperSource,
-            repo_url: repoUrl,
-          });
+        : await createAnalysis(
+            paperSourceKind === "arxiv" && paperSource.trim().includes("arxiv.org/")
+              ? {
+                  paper_source: paperSource,
+                  repo_url: repoUrl,
+                }
+              : {
+                  repo_url: repoUrl,
+                  paper_input: {
+                    source_kind: paperSourceKind,
+                    source_ref: paperSource,
+                  },
+                },
+          );
       setJob(createdJob);
       setJobs((currentJobs) => [createdJob, ...currentJobs.filter((item) => item.id !== createdJob.id)].slice(0, 5));
 
@@ -154,6 +169,7 @@ export function AnalysisForm() {
   function applyExample(example: GoldenCaseExample) {
     setPaperSource(example.paper_source);
     setPaperFile(null);
+    setPaperSourceKind(example.paper_source.includes(".pdf") ? "pdf_url" : "arxiv");
     setRepoUrl(example.repo_url);
     setError(null);
   }
@@ -183,11 +199,24 @@ export function AnalysisForm() {
               </div>
             ) : null}
             <div className="field">
+              <label htmlFor={paperSourceKindId}>Paper source type</label>
+              <select
+                id={paperSourceKindId}
+                name="paper-source-kind"
+                onChange={(event) => setPaperSourceKind(event.target.value as StructuredPaperSourceKind)}
+                value={paperSourceKind}
+              >
+                <option value="arxiv">arXiv</option>
+                <option value="pdf_url">PDF URL</option>
+                <option value="text_reference">Text reference</option>
+              </select>
+            </div>
+            <div className="field">
               <label htmlFor={paperSourceId}>Paper source</label>
               <input
                 id={paperSourceId}
                 name="paper-source"
-                placeholder="arXiv URL or PDF URL"
+                placeholder="arXiv URL, PDF URL, or text reference"
                 value={paperSource}
                 onChange={(event) => setPaperSource(event.target.value)}
               />
@@ -383,11 +412,26 @@ export function AnalysisForm() {
                 <div className="list">
                   {result.contributions.map((contribution) => (
                     <div className="item" key={contribution.id}>
-                      <h4>
-                        {contribution.id} · {contribution.title}
-                      </h4>
-                      <p>{contribution.section}</p>
-                      <p>{contribution.impl_hints.join(" ")}</p>
+                      {(() => {
+                        const evidenceRefs = contribution.evidence_refs ?? [];
+                        return (
+                          <>
+                            <h4>
+                              {contribution.id} · {contribution.title}
+                            </h4>
+                            <p>{contribution.section}</p>
+                            {contribution.problem_solved ? <p>problem: {contribution.problem_solved}</p> : null}
+                            {contribution.baseline_difference ? (
+                              <p>difference: {contribution.baseline_difference}</p>
+                            ) : null}
+                            {evidenceRefs.length > 0 ? <p>refs: {evidenceRefs.join(" · ")}</p> : null}
+                            {typeof contribution.implementation_complexity === "number" ? (
+                              <p>implementation complexity: {contribution.implementation_complexity}/5</p>
+                            ) : null}
+                            <p>{contribution.impl_hints.join(" ")}</p>
+                          </>
+                        );
+                      })()}
                     </div>
                   ))}
                 </div>
@@ -398,19 +442,31 @@ export function AnalysisForm() {
                 <div className="list">
                   {result.diff_clusters.map((cluster) => (
                     <div className="item" key={cluster.id}>
-                      <h4>
-                        {cluster.id} · {cluster.label}
-                      </h4>
-                      <p>
-                        {cluster.change_type} · {cluster.summary}
-                      </p>
-                      <p>
-                        {cluster.files.map((file) => (
-                          <code key={file} style={{ display: "block" }}>
-                            {file}
-                          </code>
-                        ))}
-                      </p>
+                      {(() => {
+                        const semanticTags = cluster.semantic_tags ?? [];
+                        const relatedClusterIds = cluster.related_cluster_ids ?? [];
+                        return (
+                          <>
+                            <h4>
+                              {cluster.id} · {cluster.label}
+                            </h4>
+                            <p>
+                              {cluster.change_type} · {cluster.summary}
+                            </p>
+                            {semanticTags.length > 0 ? <p>semantic tags: {semanticTags.join(" · ")}</p> : null}
+                            {relatedClusterIds.length > 0 ? (
+                              <p>related clusters: {relatedClusterIds.join(" · ")}</p>
+                            ) : null}
+                            <p>
+                              {cluster.files.map((file) => (
+                                <code key={file} style={{ display: "block" }}>
+                                  {file}
+                                </code>
+                              ))}
+                            </p>
+                          </>
+                        );
+                      })()}
                     </div>
                   ))}
                 </div>
@@ -422,13 +478,31 @@ export function AnalysisForm() {
                   <div className="list">
                     {result.mappings.map((mapping) => (
                       <div className="item" key={`${mapping.diff_cluster_id}-${mapping.contribution_id}`}>
-                        <h4>
-                          {mapping.diff_cluster_id} → {mapping.contribution_id}
-                        </h4>
-                        <p>
-                          confidence {mapping.confidence.toFixed(2)} · {mapping.completeness}
-                        </p>
-                        <p>{mapping.evidence}</p>
+                        {(() => {
+                          const readingOrder = mapping.reading_order ?? [];
+                          const missingAspects = mapping.missing_aspects ?? [];
+                          const engineeringDivergences = mapping.engineering_divergences ?? [];
+                          return (
+                            <>
+                              <h4>
+                                {mapping.diff_cluster_id} → {mapping.contribution_id}
+                              </h4>
+                              <p>
+                                confidence {mapping.confidence.toFixed(2)} · {mapping.completeness}
+                              </p>
+                              <p>
+                                coverage {mapping.implementation_coverage.toFixed(2)} · {mapping.coverage_type}
+                              </p>
+                              {mapping.learning_entry_point ? <p>entry point: {mapping.learning_entry_point}</p> : null}
+                              {readingOrder.length > 0 ? <p>reading order: {readingOrder.join(" → ")}</p> : null}
+                              {missingAspects.length > 0 ? <p>missing aspects: {missingAspects.join(" · ")}</p> : null}
+                              {engineeringDivergences.length > 0 ? (
+                                <p>engineering divergences: {engineeringDivergences.join(" · ")}</p>
+                              ) : null}
+                              <p>{mapping.evidence}</p>
+                            </>
+                          );
+                        })()}
                       </div>
                     ))}
                   </div>

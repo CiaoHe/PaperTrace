@@ -23,6 +23,7 @@ from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
 from papertrace_api.schemas import (
+    CreateAnalysisMultipartRequest,
     CreateAnalysisRequest,
     CreateAnalysisResponse,
     ExamplesResponse,
@@ -102,12 +103,34 @@ def get_analyses() -> JobsResponse:
             "content": {
                 "application/json": {
                     "schema": {
-                        "type": "object",
-                        "required": ["paper_source", "repo_url"],
-                        "properties": {
-                            "paper_source": {"type": "string"},
-                            "repo_url": {"type": "string"},
-                        },
+                        "anyOf": [
+                            {
+                                "type": "object",
+                                "required": ["paper_source", "repo_url"],
+                                "properties": {
+                                    "paper_source": {"type": "string"},
+                                    "repo_url": {"type": "string"},
+                                },
+                            },
+                            {
+                                "type": "object",
+                                "required": ["paper_input", "repo_url"],
+                                "properties": {
+                                    "repo_url": {"type": "string"},
+                                    "paper_input": {
+                                        "type": "object",
+                                        "required": ["source_kind", "source_ref"],
+                                        "properties": {
+                                            "source_kind": {
+                                                "type": "string",
+                                                "enum": ["arxiv", "pdf_url", "text_reference"],
+                                            },
+                                            "source_ref": {"type": "string"},
+                                        },
+                                    },
+                                },
+                            },
+                        ]
                     },
                 },
                 "multipart/form-data": {
@@ -118,6 +141,11 @@ def get_analyses() -> JobsResponse:
                             "paper_source": {
                                 "type": "string",
                                 "description": "arXiv URL, PDF URL, or optional text hint when uploading a PDF",
+                            },
+                            "paper_source_kind": {
+                                "type": "string",
+                                "enum": ["arxiv", "pdf_url", "pdf_file", "text_reference"],
+                                "description": "Optional explicit source-kind hint for non-file submissions.",
                             },
                             "repo_url": {"type": "string"},
                             "paper_file": {"type": "string", "format": "binary"},
@@ -137,23 +165,32 @@ async def create_analysis(
             form = await request.form()
             repo_url = form.get("repo_url")
             paper_source = form.get("paper_source")
+            paper_source_kind = form.get("paper_source_kind")
             paper_file = form.get("paper_file")
-            if not isinstance(repo_url, str):
-                raise ValueError("Repository URL is required")
+            multipart_payload = CreateAnalysisMultipartRequest.model_validate(
+                {
+                    "repo_url": repo_url,
+                    "paper_source": paper_source if isinstance(paper_source, str) else None,
+                    "paper_source_kind": paper_source_kind if isinstance(paper_source_kind, str) else None,
+                }
+            )
             uploaded_file = paper_file if isinstance(paper_file, UploadFile) else None
             resolved_paper_source = (
                 await persist_uploaded_pdf(uploaded_file, settings)
                 if uploaded_file is not None
-                else normalize_paper_source(str(paper_source or ""))
+                else normalize_paper_source(str(multipart_payload.paper_source or ""))
             )
             analysis_request = AnalysisRequest(
                 paper_source=resolved_paper_source,
-                repo_url=normalize_repo_url(repo_url),
+                repo_url=normalize_repo_url(multipart_payload.repo_url),
             )
         else:
             payload = CreateAnalysisRequest.model_validate(await request.json())
+            paper_source = (
+                payload.paper_input.source_ref if payload.paper_input is not None else str(payload.paper_source or "")
+            )
             analysis_request = AnalysisRequest(
-                paper_source=normalize_paper_source(payload.paper_source),
+                paper_source=normalize_paper_source(paper_source),
                 repo_url=normalize_repo_url(payload.repo_url),
             )
     except HTTPException:

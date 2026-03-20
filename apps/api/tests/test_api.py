@@ -125,6 +125,29 @@ def test_create_analysis_runs_fixture_pipeline() -> None:
         assert result_body["metadata"]["repo_tracer_mode"] == "strategy_chain"
 
 
+def test_create_analysis_accepts_structured_paper_input() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/analyses",
+            json={
+                "repo_url": "https://github.com/microsoft/LoRA",
+                "paper_input": {
+                    "source_kind": "arxiv",
+                    "source_ref": "https://arxiv.org/abs/2106.09685 LoRA",
+                },
+            },
+        )
+
+        assert response.status_code == 202
+        body = response.json()
+        job_id = body["job"]["id"]
+
+        result_response = client.get(f"/api/v1/analyses/{job_id}/result")
+        assert result_response.status_code == 200
+        result_body = result_response.json()["result"]
+        assert result_body["metadata"]["paper_source_kind"] == "arxiv"
+
+
 def test_create_analysis_accepts_multipart_pdf_upload() -> None:
     with TestClient(app) as client:
         response = client.post(

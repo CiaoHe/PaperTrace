@@ -12,9 +12,20 @@ import type {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
+export type StructuredPaperSourceKind = "arxiv" | "pdf_url" | "text_reference";
+
+export interface StructuredCreateAnalysisRequest {
+  repo_url: string;
+  paper_input: {
+    source_kind: StructuredPaperSourceKind;
+    source_ref: string;
+  };
+}
+
 export interface CreateAnalysisUploadPayload {
   paperFile: File;
   paperSource?: string;
+  paperSourceKind?: StructuredPaperSourceKind | "pdf_file";
   repoUrl: string;
 }
 
@@ -28,7 +39,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 export async function createAnalysis(
-  payload: CreateAnalysisRequest | CreateAnalysisUploadPayload,
+  payload: CreateAnalysisRequest | StructuredCreateAnalysisRequest | CreateAnalysisUploadPayload,
 ): Promise<JobStatusResponse> {
   const response =
     "paperFile" in payload
@@ -40,6 +51,9 @@ export async function createAnalysis(
             formData.set("paper_file", payload.paperFile);
             if (payload.paperSource) {
               formData.set("paper_source", payload.paperSource);
+            }
+            if (payload.paperSourceKind) {
+              formData.set("paper_source_kind", payload.paperSourceKind);
             }
             return formData;
           })(),

@@ -48,6 +48,7 @@ test("renders the local MVP shell", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("PaperTrace local MVP")).toBeVisible();
   await expect(page.getByText("API runtime config")).toBeVisible();
+  await expect(page.getByLabel("Paper source type")).toBeVisible();
   await expect(page.getByLabel("PDF upload")).toBeVisible();
   await expect(page.getByRole("button", { name: "Analyze" })).toBeVisible();
 });
@@ -65,12 +66,13 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await expect(page.getByText("strategy chain")).toBeVisible();
   await expect(page.getByText("Contribution mappings")).toBeVisible();
   await expect(page.getByText("D1 → C1")).toBeVisible();
+  await expect(page.getByText(/coverage 1\.00/i).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Open job" }).first()).toBeVisible();
 });
 
 test("uploads a PDF and renders pdf-file provenance", async ({ page }) => {
   await page.goto("/");
-  await page.getByLabel("Paper source").fill("");
+  await page.getByRole("textbox", { name: "Paper source" }).fill("");
   await page.getByLabel("Repository URL").fill("https://github.com/microsoft/LoRA");
   await page.getByLabel("PDF upload").setInputFiles({
     name: "lora-upload.pdf",

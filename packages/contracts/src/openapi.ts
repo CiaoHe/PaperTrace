@@ -419,10 +419,22 @@ export interface operations {
                 "application/json": {
                     paper_source: string;
                     repo_url: string;
+                } | {
+                    repo_url: string;
+                    paper_input: {
+                        /** @enum {string} */
+                        source_kind: "arxiv" | "pdf_url" | "text_reference";
+                        source_ref: string;
+                    };
                 };
                 "multipart/form-data": {
                     /** @description arXiv URL, PDF URL, or optional text hint when uploading a PDF */
                     paper_source?: string;
+                    /**
+                     * @description Optional explicit source-kind hint for non-file submissions.
+                     * @enum {string}
+                     */
+                    paper_source_kind?: "arxiv" | "pdf_url" | "pdf_file" | "text_reference";
                     repo_url: string;
                     /** Format: binary */
                     paper_file?: string;
