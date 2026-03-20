@@ -30,7 +30,22 @@
       "label": "DPO trainer objective",
       "change_type": "MODIFIED_LOSS",
       "files": ["trl/trainer/dpo_trainer.py"],
-      "summary": "Introduces the preference loss and policy/reference comparison path."
+      "summary": "Introduces the preference loss and policy/reference comparison path.",
+      "semantic_tags": ["preference", "loss", "reference"],
+      "code_anchors": [
+        {
+          "patch_id": "dpo-loss-anchor",
+          "file_path": "trl/trainer/dpo_trainer.py",
+          "start_line": 118,
+          "end_line": 126,
+          "original_start_line": 94,
+          "original_end_line": 99,
+          "snippet": "def dpo_loss(policy_chosen, policy_rejected, ref_chosen, ref_rejected, beta):\n    policy_gap = policy_chosen - policy_rejected\n    reference_gap = ref_chosen - ref_rejected\n    logits = beta * (policy_gap - reference_gap)\n    return -F.logsigmoid(logits).mean()",
+          "original_snippet": "def preference_loss(chosen_scores, rejected_scores):\n    margin = chosen_scores - rejected_scores\n    return -margin.mean()",
+          "reason": "Implements the direct preference objective with policy/reference logit differences.",
+          "anchor_kind": "modification"
+        }
+      ]
     }
   ],
   "mappings": [
@@ -39,9 +54,12 @@
       "contribution_id": "C1",
       "confidence": 0.93,
       "evidence": "The trainer objective computes the preference-aware loss from policy and reference logits.",
-      "completeness": "complete"
+      "completeness": "complete",
+      "implementation_coverage": 0.91,
+      "coverage_type": "FULL",
+      "matched_anchor_patch_ids": ["dpo-loss-anchor"],
+      "reading_order": ["trl/trainer/dpo_trainer.py"]
     }
   ],
   "warnings": []
 }
-

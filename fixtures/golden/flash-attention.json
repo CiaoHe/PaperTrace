@@ -30,7 +30,34 @@
       "label": "Fused attention kernel",
       "change_type": "MODIFIED_CORE",
       "files": ["flash_attn/flash_attn_interface.py", "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu"],
-      "summary": "Adds fused attention kernels and dispatch wrappers."
+      "summary": "Adds fused attention kernels and dispatch wrappers.",
+      "semantic_tags": ["attention", "kernel", "memory"],
+      "code_anchors": [
+        {
+          "patch_id": "flash-interface-anchor",
+          "file_path": "flash_attn/flash_attn_interface.py",
+          "start_line": 33,
+          "end_line": 41,
+          "original_start_line": 20,
+          "original_end_line": 26,
+          "snippet": "def flash_attn_func(q, k, v, dropout_p=0.0, softmax_scale=None):\n    return flash_attn_cuda.fwd(\n        q,\n        k,\n        v,\n        dropout_p,\n        softmax_scale,\n    )",
+          "original_snippet": "def attention(q, k, v, scale=None):\n    scores = torch.matmul(q, k.transpose(-1, -2))\n    probs = torch.softmax(scores * scale, dim=-1)\n    return torch.matmul(probs, v)",
+          "reason": "Replaces materialized attention with a fused dispatch path.",
+          "anchor_kind": "modification"
+        },
+        {
+          "patch_id": "flash-kernel-anchor",
+          "file_path": "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu",
+          "start_line": 72,
+          "end_line": 80,
+          "original_start_line": 51,
+          "original_end_line": 57,
+          "snippet": "__global__ void flash_fwd_kernel(const half* q, const half* k, const half* v, half* out) {\n    __shared__ half q_tile[BLOCK_M][HEAD_DIM];\n    __shared__ half k_tile[BLOCK_N][HEAD_DIM];\n    // stream blocks through SRAM to avoid materializing attention scores\n    compute_flash_attention(q_tile, k_tile, v, out);\n}",
+          "original_snippet": "__global__ void attention_kernel(const half* q, const half* k, const half* v, half* out) {\n    // baseline kernel computes and stores full attention matrix\n    compute_attention_scores(q, k, out);\n    apply_attention_values(out, v);\n}",
+          "reason": "Implements the IO-aware tiled kernel that avoids storing the full attention matrix.",
+          "anchor_kind": "modification"
+        }
+      ]
     }
   ],
   "mappings": [
@@ -39,7 +66,11 @@
       "contribution_id": "C1",
       "confidence": 0.89,
       "evidence": "The fused kernel corresponds to the IO-aware attention implementation in the paper.",
-      "completeness": "partial"
+      "completeness": "partial",
+      "implementation_coverage": 0.83,
+      "coverage_type": "PARTIAL",
+      "matched_anchor_patch_ids": ["flash-interface-anchor", "flash-kernel-anchor"],
+      "reading_order": ["flash_attn/flash_attn_interface.py", "csrc/flash_attn/src/flash_fwd_hdim32_fp16_sm80.cu"]
     }
   ],
   "warnings": ["Local MVP does not execute CUDA kernels; results are fixture-backed."]

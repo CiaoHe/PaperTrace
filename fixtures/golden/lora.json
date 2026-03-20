@@ -43,14 +43,56 @@
       "label": "LoRA adapter modules",
       "change_type": "NEW_MODULE",
       "files": ["peft/tuners/lora/layer.py", "peft/tuners/lora/model.py"],
-      "summary": "Adds reusable low-rank adapter layers and wiring into linear projections."
+      "summary": "Adds reusable low-rank adapter layers and wiring into linear projections.",
+      "semantic_tags": ["adapter", "low-rank", "attention"],
+      "code_anchors": [
+        {
+          "patch_id": "lora-layer-anchor",
+          "file_path": "peft/tuners/lora/layer.py",
+          "start_line": 21,
+          "end_line": 28,
+          "original_start_line": 12,
+          "original_end_line": 16,
+          "snippet": "class LoraLinear(nn.Module):\n    def __init__(self, in_features, out_features, r=8, alpha=16):\n        super().__init__()\n        self.base_layer = nn.Linear(in_features, out_features, bias=False)\n        self.lora_A = nn.Parameter(torch.zeros(r, in_features))\n        self.lora_B = nn.Parameter(torch.zeros(out_features, r))\n        self.scaling = alpha / r",
+          "original_snippet": "class LinearLayer(nn.Module):\n    def __init__(self, in_features, out_features):\n        super().__init__()\n        self.weight = nn.Parameter(torch.empty(out_features, in_features))\n        self.bias = None",
+          "reason": "Introduces the trainable low-rank A/B matrices described in the LoRA paper.",
+          "anchor_kind": "addition"
+        },
+        {
+          "patch_id": "lora-model-anchor",
+          "file_path": "peft/tuners/lora/model.py",
+          "start_line": 44,
+          "end_line": 50,
+          "original_start_line": 27,
+          "original_end_line": 31,
+          "snippet": "def inject_adapter(module, target_modules):\n    for name, child in module.named_children():\n        if name in target_modules:\n            setattr(module, name, LoraLinear.from_linear(child))\n        else:\n            inject_adapter(child, target_modules)",
+          "original_snippet": "def prepare_model(module, target_modules):\n    for name, child in module.named_children():\n        if name in target_modules:\n            setattr(module, name, child)\n        else:\n            prepare_model(child, target_modules)",
+          "reason": "Wires the new adapter layer into target attention projections.",
+          "anchor_kind": "modification"
+        }
+      ]
     },
     {
       "id": "D2",
       "label": "Training freeze logic",
       "change_type": "MODIFIED_TRAIN",
       "files": ["peft/utils/other.py"],
-      "summary": "Restricts optimizer updates to adapter parameters while freezing the base model."
+      "summary": "Restricts optimizer updates to adapter parameters while freezing the base model.",
+      "semantic_tags": ["freeze", "optimizer"],
+      "code_anchors": [
+        {
+          "patch_id": "lora-freeze-anchor",
+          "file_path": "peft/utils/other.py",
+          "start_line": 10,
+          "end_line": 16,
+          "original_start_line": 10,
+          "original_end_line": 13,
+          "snippet": "def mark_only_lora_as_trainable(model):\n    for name, parameter in model.named_parameters():\n        parameter.requires_grad = \"lora_\" in name\n    return model",
+          "original_snippet": "def mark_trainable(model):\n    for _, parameter in model.named_parameters():\n        parameter.requires_grad = True\n    return model",
+          "reason": "Keeps the pretrained backbone frozen and updates only LoRA parameters.",
+          "anchor_kind": "modification"
+        }
+      ]
     }
   ],
   "mappings": [
@@ -59,16 +101,23 @@
       "contribution_id": "C1",
       "confidence": 0.95,
       "evidence": "The adapter modules implement the rank-decomposition described in the paper.",
-      "completeness": "complete"
+      "completeness": "complete",
+      "implementation_coverage": 0.94,
+      "coverage_type": "FULL",
+      "matched_anchor_patch_ids": ["lora-layer-anchor", "lora-model-anchor"],
+      "reading_order": ["peft/tuners/lora/layer.py", "peft/tuners/lora/model.py"]
     },
     {
       "diff_cluster_id": "D2",
       "contribution_id": "C2",
       "confidence": 0.9,
       "evidence": "The training utilities freeze pretrained weights and keep LoRA weights trainable.",
-      "completeness": "complete"
+      "completeness": "complete",
+      "implementation_coverage": 0.88,
+      "coverage_type": "FULL",
+      "matched_anchor_patch_ids": ["lora-freeze-anchor"],
+      "reading_order": ["peft/utils/other.py"]
     }
   ],
   "warnings": []
 }
-

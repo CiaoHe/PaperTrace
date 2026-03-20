@@ -574,48 +574,21 @@ select {
   gap: 16px;
 }
 
-.review-anchor-strip,
 .checklist {
   display: grid;
   gap: 10px;
 }
 
-.review-anchor-strip {
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-}
-
-.review-anchor-chip {
+.github-review-grid {
   display: grid;
-  gap: 6px;
-  width: 100%;
-  text-align: left;
-  padding: 12px 14px;
-  border-radius: 16px;
-  border: 1px solid rgba(24, 33, 47, 0.12);
-  background: rgba(255, 255, 255, 0.96);
-  cursor: pointer;
-}
-
-.review-anchor-chip.active,
-.review-file-chip.active,
-.pill-button:hover {
-  border-color: rgba(15, 118, 110, 0.32);
-  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.12);
-}
-
-.review-anchor-chip strong,
-.review-anchor-chip span {
-  display: block;
-}
-
-.three-way-review-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(320px, 380px);
+  grid-template-columns: minmax(240px, 280px) minmax(0, 1fr) minmax(320px, 380px);
   gap: 16px;
   align-items: flex-start;
 }
 
-.review-pane {
+.review-pane,
+.github-filetree-pane,
+.github-diff-pane {
   display: grid;
   gap: 14px;
   padding: 16px;
@@ -623,6 +596,54 @@ select {
   border: 1px solid rgba(24, 33, 47, 0.08);
   background: rgba(255, 255, 255, 0.84);
   min-width: 0;
+}
+
+.github-filetree-shell {
+  display: grid;
+  gap: 10px;
+  max-height: min(78vh, 960px);
+  overflow: auto;
+  padding: 10px 0;
+  border: 1px solid rgba(24, 33, 47, 0.08);
+  border-radius: 16px;
+  background: rgba(247, 249, 251, 0.85);
+}
+
+.file-tree-branch,
+.file-tree-group {
+  display: grid;
+}
+
+.file-tree-node {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  min-height: 34px;
+  border: none;
+  background: transparent;
+  text-align: left;
+  color: var(--ink);
+}
+
+.file-tree-node.dir {
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.file-tree-node.file {
+  cursor: pointer;
+}
+
+.file-tree-node.file.active {
+  background: rgba(15, 118, 110, 0.1);
+  color: var(--ink);
+}
+
+.file-tree-node span,
+.file-tree-node small {
+  display: block;
 }
 
 .review-pane-head {
@@ -674,6 +695,42 @@ select {
 
 .paper-review-pane {
   align-content: flex-start;
+}
+
+.github-diff-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.github-diff-block {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 0;
+  border-radius: 16px;
+  border: 1px solid rgba(24, 33, 47, 0.1);
+  background: rgba(255, 255, 255, 0.96);
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.github-diff-block.active {
+  border-color: rgba(15, 118, 110, 0.32);
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.12);
+}
+
+.github-diff-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 12px 14px 0;
+}
+
+.github-diff-head p,
+.github-diff-head strong {
+  margin: 0;
 }
 
 .paper-review-stack {
@@ -799,8 +856,7 @@ select {
 
   .mapping-lane,
   .evidence-context-grid,
-  .review-anchor-strip,
-  .three-way-review-grid,
+  .github-review-grid,
   .lineage-graph,
   .workbench-grid,
   .detail-grid {

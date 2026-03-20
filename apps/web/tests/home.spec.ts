@@ -72,15 +72,16 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await expect(page.getByText("Evidence review board")).toBeVisible();
   await expect(page.getByText("Mapped change bundles")).toBeVisible();
   await expect(page.getByTestId("mapping-lane")).toBeVisible();
-  await expect(page.getByTestId("three-way-review-grid")).toBeVisible();
-  await expect(page.getByTestId("source-review-pane")).toBeVisible();
-  await expect(page.getByTestId("current-review-pane")).toBeVisible();
+  await expect(page.getByTestId("github-review-grid")).toBeVisible();
+  await expect(page.getByTestId("github-filetree-pane")).toBeVisible();
+  await expect(page.getByTestId("github-diff-pane")).toBeVisible();
   await expect(page.getByTestId("paper-review-pane")).toBeVisible();
   await expect(page.getByText("Linked change review")).toBeVisible();
   await expect(page.getByText("D1 → C1").first()).toBeVisible();
-  await expect(page.getByTestId("source-review-pane").getByText("Source repo")).toBeVisible();
-  await expect(page.getByTestId("current-review-pane").getByText("Current repo")).toBeVisible();
+  await expect(page.getByText("Files changed")).toBeVisible();
+  await expect(page.getByText("Code review")).toBeVisible();
   await expect(page.getByTestId("paper-review-pane").getByText("Paper", { exact: true })).toBeVisible();
+  await expect(page.getByTestId("monaco-evidence-viewer").first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Back to shell" })).toBeVisible();
 });
 

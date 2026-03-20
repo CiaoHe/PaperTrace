@@ -1,9 +1,9 @@
 "use client";
 
 import type { ContributionMapping, DiffCluster, DiffCodeAnchor, PaperContribution } from "@papertrace/contracts";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { AnalysisMonacoCodeViewer } from "@/components/analysis-monaco-code-viewer";
+import { AnalysisMonacoDiffViewer } from "@/components/analysis-monaco-diff-viewer";
 
 interface AnalysisEvidencePanelProps {
   contribution: PaperContribution | null;
@@ -18,11 +18,12 @@ interface ReviewFileEntry {
   anchors: DiffCodeAnchor[];
 }
 
-interface SnippetStreamProps {
-  anchors: DiffCodeAnchor[];
-  mode: "source" | "current";
-  selectedAnchorKey: string | null;
-  onSelect: (value: string) => void;
+interface FileTreeNode {
+  name: string;
+  path: string;
+  children: FileTreeNode[];
+  isFile: boolean;
+  anchorCount: number;
 }
 
 function buildPaperClaims(contribution: PaperContribution | null): string[] {
@@ -49,7 +50,10 @@ function sortCodeAnchors(diffCluster: DiffCluster | null, mapping: ContributionM
     }
     const leftRank = readingOrder.indexOf(left.file_path);
     const rightRank = readingOrder.indexOf(right.file_path);
-    return (leftRank === -1 ? 999 : leftRank) - (rightRank === -1 ? 999 : rightRank);
+    if (leftRank !== rightRank) {
+      return (leftRank === -1 ? 999 : leftRank) - (rightRank === -1 ? 999 : rightRank);
+    }
+    return left.start_line - right.start_line;
   });
 }
 
@@ -68,9 +72,9 @@ function buildReviewChecklist(
 
   return [
     mapping.learning_entry_point
-      ? `Start from ${mapping.learning_entry_point} and verify that the selected change is the implementation hook.`
+      ? `Start from ${mapping.learning_entry_point} and verify the implementation hook.`
       : `Start from ${diffCluster.files[0] ?? "the selected file"} and verify the implementation hook.`,
-    `Check whether the code change actually implements "${contribution.title}".`,
+    `Check whether the selected diff really implements "${contribution.title}".`,
     ...(mapping.missing_aspects ?? []).map((item) => `Missing evidence: ${item}`),
   ];
 }
@@ -87,14 +91,61 @@ function buildReviewFiles(diffCluster: DiffCluster | null, codeAnchors: DiffCode
     grouped.set(anchor.file_path, existing);
   }
 
-  const files = diffCluster.files.map((path) => ({
-    path,
-    anchors: grouped.get(path) ?? [],
-  }));
-  const hasAnchoredFile = files.some((file) => file.anchors.length > 0);
-  return files
-    .filter((file) => (hasAnchoredFile ? file.anchors.length > 0 : true))
+  return diffCluster.files
+    .map((path) => ({
+      path,
+      anchors: grouped.get(path) ?? [],
+    }))
     .sort((left, right) => right.anchors.length - left.anchors.length || left.path.localeCompare(right.path));
+}
+
+function buildFileTree(files: ReviewFileEntry[]): FileTreeNode[] {
+  const root: FileTreeNode[] = [];
+
+  function upsert(nodes: FileTreeNode[], parts: string[], anchorCount: number, prefix = ""): void {
+    const [head, ...tail] = parts;
+    if (!head) {
+      return;
+    }
+    const nextPath = prefix ? `${prefix}/${head}` : head;
+    const isFile = tail.length === 0;
+    let node = nodes.find((entry) => entry.name === head && entry.path === nextPath);
+    if (!node) {
+      node = {
+        name: head,
+        path: nextPath,
+        children: [],
+        isFile,
+        anchorCount: isFile ? anchorCount : 0,
+      };
+      nodes.push(node);
+    }
+    if (isFile) {
+      node.anchorCount = anchorCount;
+      return;
+    }
+    upsert(node.children, tail, anchorCount, nextPath);
+  }
+
+  for (const file of files) {
+    upsert(root, file.path.split("/"), file.anchors.length);
+  }
+
+  function sortNodes(nodes: FileTreeNode[]): FileTreeNode[] {
+    return [...nodes]
+      .map((node) => ({
+        ...node,
+        children: sortNodes(node.children),
+      }))
+      .sort((left, right) => {
+        if (left.isFile !== right.isFile) {
+          return left.isFile ? 1 : -1;
+        }
+        return left.name.localeCompare(right.name);
+      });
+  }
+
+  return sortNodes(root);
 }
 
 function formatRange(startLine: number | null | undefined, endLine: number | null | undefined): string {
@@ -104,51 +155,42 @@ function formatRange(startLine: number | null | undefined, endLine: number | nul
   return `${startLine}-${endLine}`;
 }
 
-function previewSnippet(value: string | null | undefined): string {
-  if (!value) {
-    return "Snippet unavailable.";
-  }
-  return value
-    .trim()
-    .split("\n")
-    .slice(0, 6)
-    .join("\n");
+interface FileTreeBranchProps {
+  nodes: FileTreeNode[];
+  selectedFilePath: string | null;
+  onSelect: (path: string) => void;
+  depth?: number;
 }
 
-function SnippetStream({ anchors, mode, selectedAnchorKey, onSelect }: SnippetStreamProps) {
-  if (anchors.length === 0) {
-    return null;
-  }
-
+function FileTreeBranch({ nodes, selectedFilePath, onSelect, depth = 0 }: FileTreeBranchProps) {
   return (
-    <div className="review-stream">
-      {anchors.map((anchor) => {
-        const key = anchorKey(anchor);
-        const active = key === selectedAnchorKey;
-        const range =
-          mode === "source"
-            ? formatRange(anchor.original_start_line, anchor.original_end_line)
-            : formatRange(anchor.start_line, anchor.end_line);
-        const snippet = mode === "source" ? anchor.original_snippet : anchor.snippet;
-
-        return (
+    <div className="file-tree-branch">
+      {nodes.map((node) =>
+        node.isFile ? (
           <button
-            className={`review-snippet-card${active ? " active" : ""}`}
-            key={`${mode}:${key}`}
-            onClick={() => onSelect(key)}
+            className={`file-tree-node file${selectedFilePath === node.path ? " active" : ""}`}
+            key={node.path}
+            onClick={() => onSelect(node.path)}
+            style={{ paddingLeft: `${12 + depth * 18}px` }}
             type="button"
           >
-            <div className="trace-head">
-              <div>
-                <small>{mode === "source" ? "upstream snippet" : "current snippet"}</small>
-                <h4>{anchor.file_path}</h4>
-              </div>
-              <strong>{range}</strong>
-            </div>
-            <pre className="review-snippet-preview">{previewSnippet(snippet)}</pre>
+            <span>{node.name}</span>
+            <small>{node.anchorCount}</small>
           </button>
-        );
-      })}
+        ) : (
+          <div className="file-tree-group" key={node.path}>
+            <div className="file-tree-node dir" style={{ paddingLeft: `${12 + depth * 18}px` }}>
+              <span>{node.name}</span>
+            </div>
+            <FileTreeBranch
+              depth={depth + 1}
+              nodes={node.children}
+              onSelect={onSelect}
+              selectedFilePath={selectedFilePath}
+            />
+          </div>
+        ),
+      )}
     </div>
   );
 }
@@ -162,32 +204,42 @@ export function AnalysisEvidencePanel({
 }: AnalysisEvidencePanelProps) {
   const paperClaims = buildPaperClaims(contribution);
   const codeAnchors = sortCodeAnchors(diffCluster, mapping);
-  const reviewChecklist = buildReviewChecklist(contribution, diffCluster, mapping);
   const reviewFiles = buildReviewFiles(diffCluster, codeAnchors);
+  const fileTree = useMemo(() => buildFileTree(reviewFiles), [reviewFiles]);
+  const reviewChecklist = buildReviewChecklist(contribution, diffCluster, mapping);
   const fidelityNotes = mapping?.fidelity_notes ?? [];
   const referenceBadges = contribution?.evidence_refs ?? [];
   const semanticTags = diffCluster?.semantic_tags ?? [];
-  const [selectedAnchorKey, setSelectedAnchorKey] = useState<string | null>(null);
-  const firstAnchorKey = codeAnchors[0] ? anchorKey(codeAnchors[0]) : null;
+  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(reviewFiles[0]?.path ?? null);
+  const [selectedAnchorKey, setSelectedAnchorKey] = useState<string | null>(
+    codeAnchors[0] ? anchorKey(codeAnchors[0]) : null,
+  );
 
   useEffect(() => {
-    setSelectedAnchorKey(firstAnchorKey);
-  }, [firstAnchorKey]);
+    const nextFile = reviewFiles[0]?.path ?? null;
+    setSelectedFilePath(nextFile);
+    setSelectedAnchorKey(codeAnchors[0] ? anchorKey(codeAnchors[0]) : null);
+  }, [reviewFiles, codeAnchors]);
 
+  const selectedFile = reviewFiles.find((file) => file.path === selectedFilePath) ?? reviewFiles[0] ?? null;
+  const selectedFileAnchors = selectedFile?.anchors ?? [];
   const selectedAnchor =
-    codeAnchors.find((anchor) => anchorKey(anchor) === selectedAnchorKey) ?? codeAnchors[0] ?? null;
-  const selectedFilePath = selectedAnchor?.file_path ?? reviewFiles[0]?.path ?? null;
+    selectedFileAnchors.find((anchor) => anchorKey(anchor) === selectedAnchorKey) ??
+    selectedFileAnchors[0] ??
+    codeAnchors[0] ??
+    null;
   const selectedAnchorMatched = Boolean(
     selectedAnchor?.patch_id && mapping?.matched_anchor_patch_ids?.includes(selectedAnchor.patch_id),
   );
-  const siblingAnchors =
-    selectedAnchor && selectedFilePath
-      ? codeAnchors.filter((anchor) => anchor.file_path === selectedFilePath && anchorKey(anchor) !== anchorKey(selectedAnchor))
-      : [];
-  const alternateAnchors =
-    selectedAnchor && selectedFilePath
-      ? codeAnchors.filter((anchor) => anchor.file_path !== selectedFilePath)
-      : codeAnchors;
+
+  useEffect(() => {
+    if (!selectedFile) {
+      return;
+    }
+    if (!selectedFileAnchors.some((anchor) => anchorKey(anchor) === selectedAnchorKey)) {
+      setSelectedAnchorKey(selectedFileAnchors[0] ? anchorKey(selectedFileAnchors[0]) : null);
+    }
+  }, [selectedAnchorKey, selectedFile, selectedFileAnchors]);
 
   return (
     <div className="workbench-card evidence-review-stage">
@@ -195,164 +247,78 @@ export function AnalysisEvidencePanel({
         <div>
           <h4>Linked change review</h4>
           <p className="muted">
-            Each selected anchor is reviewed as a clean three-way correspondence: upstream source code, current repo
-            implementation, and the paper claim it is supposed to realize.
+            Left is the changed file tree, middle is the actual code diff, and right explains how the selected code
+            block maps back to the paper.
           </p>
         </div>
       </div>
 
-      <div className="review-anchor-strip">
-        {codeAnchors.length > 0 ? (
-          codeAnchors.map((anchor, index) => {
-            const isActive = selectedAnchorKey === anchorKey(anchor);
-            const isMatched = Boolean(anchor.patch_id && mapping?.matched_anchor_patch_ids?.includes(anchor.patch_id));
-            return (
-              <button
-                className={`review-anchor-chip${isActive ? " active" : ""}`}
-                key={anchorKey(anchor)}
-                onClick={() => setSelectedAnchorKey(anchorKey(anchor))}
-                type="button"
-              >
-                <strong>
-                  {index + 1}. {anchor.file_path}
-                </strong>
-                <span>
-                  lines {anchor.start_line}-{anchor.end_line} · {isMatched ? "linked" : "context"}
-                </span>
-              </button>
-            );
-          })
-        ) : (
-          <div className="item">
-            <p>No line-level anchors were extracted for this diff cluster yet.</p>
-          </div>
-        )}
-      </div>
-
-      <div className="three-way-review-grid" data-testid="three-way-review-grid">
-        <section className="review-pane" data-testid="source-review-pane">
+      <div className="github-review-grid" data-testid="github-review-grid">
+        <aside className="github-filetree-pane" data-testid="github-filetree-pane">
           <div className="review-pane-head">
-            <small>Source repo</small>
-            <h4>{sourceRepoUrl}</h4>
+            <small>Files changed</small>
+            <h4>{diffCluster ? `${diffCluster.id} · ${diffCluster.label}` : "No diff cluster selected"}</h4>
             <p className="muted">
-              {selectedAnchor
-                ? `${selectedAnchor.file_path} · original ${formatRange(
-                    selectedAnchor.original_start_line,
-                    selectedAnchor.original_end_line,
-                  )}`
-                : "No upstream snippet is attached to this cluster yet."}
+              {reviewFiles.length} files · {codeAnchors.length} extracted code anchors
             </p>
           </div>
-          <div className="review-pane-body">
-            <AnalysisMonacoCodeViewer
-              emptyMessage="No upstream source snippet is available for this anchor."
-              filePath={selectedAnchor?.file_path ?? selectedFilePath}
-              height="min(68vh, 900px)"
-              rangeLabel={
-                selectedAnchor
-                  ? `original ${formatRange(selectedAnchor.original_start_line, selectedAnchor.original_end_line)}`
-                  : undefined
-              }
-              value={selectedAnchor?.original_snippet ?? ""}
-            />
-            {siblingAnchors.length > 0 ? (
-              <div className="review-subsection">
-                <h4>More upstream snippets in this file</h4>
-                <SnippetStream
-                  anchors={siblingAnchors}
-                  mode="source"
-                  onSelect={setSelectedAnchorKey}
-                  selectedAnchorKey={selectedAnchorKey}
-                />
-              </div>
-            ) : null}
-            {alternateAnchors.length > 0 ? (
-              <div className="review-subsection">
-                <h4>Other linked files</h4>
-                <SnippetStream
-                  anchors={alternateAnchors.slice(0, 6)}
-                  mode="source"
-                  onSelect={setSelectedAnchorKey}
-                  selectedAnchorKey={selectedAnchorKey}
-                />
-              </div>
-            ) : null}
-            {reviewFiles.length > 0 ? (
-              <div className="review-file-tree">
-                {reviewFiles.map((file) => (
-                  <button
-                    className={`review-file-chip${selectedFilePath === file.path ? " active" : ""}`}
-                    key={`source:${file.path}`}
-                    onClick={() => setSelectedAnchorKey(file.anchors[0] ? anchorKey(file.anchors[0]) : null)}
-                    type="button"
-                  >
-                    <strong>{file.path}</strong>
-                    <span>{file.anchors.length} anchor(s)</span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
+          <div className="github-filetree-shell">
+            {fileTree.length > 0 ? (
+              <FileTreeBranch nodes={fileTree} onSelect={setSelectedFilePath} selectedFilePath={selectedFilePath} />
+            ) : (
+              <p className="muted">No file-level evidence is available for this cluster.</p>
+            )}
           </div>
-        </section>
+        </aside>
 
-        <section className="review-pane" data-testid="current-review-pane">
+        <section className="github-diff-pane" data-testid="github-diff-pane">
           <div className="review-pane-head">
-            <small>Current repo</small>
-            <h4>{currentRepoUrl}</h4>
+            <small>Code review</small>
+            <h4>{selectedFile?.path ?? "No file selected"}</h4>
             <p className="muted">
-              {selectedAnchor
-                ? `${selectedAnchor.file_path} · current ${selectedAnchor.start_line}-${selectedAnchor.end_line}`
-                : "Select an anchor to inspect the current implementation."}
+              {selectedFile
+                ? `${sourceRepoUrl} -> ${currentRepoUrl}`
+                : "Select a file with extracted evidence to review the diff."}
             </p>
           </div>
-          <div className="review-pane-body">
-            <AnalysisMonacoCodeViewer
-              emptyMessage="No current-repo snippet is available for this anchor."
-              filePath={selectedAnchor?.file_path ?? selectedFilePath}
-              height="min(68vh, 900px)"
-              rangeLabel={
-                selectedAnchor ? `current ${selectedAnchor.start_line}-${selectedAnchor.end_line}` : undefined
-              }
-              value={selectedAnchor?.snippet ?? ""}
-            />
-            {siblingAnchors.length > 0 ? (
-              <div className="review-subsection">
-                <h4>More current-repo snippets in this file</h4>
-                <SnippetStream
-                  anchors={siblingAnchors}
-                  mode="current"
-                  onSelect={setSelectedAnchorKey}
-                  selectedAnchorKey={selectedAnchorKey}
-                />
-              </div>
-            ) : null}
-            {alternateAnchors.length > 0 ? (
-              <div className="review-subsection">
-                <h4>Other linked files</h4>
-                <SnippetStream
-                  anchors={alternateAnchors.slice(0, 6)}
-                  mode="current"
-                  onSelect={setSelectedAnchorKey}
-                  selectedAnchorKey={selectedAnchorKey}
-                />
-              </div>
-            ) : null}
-            {reviewFiles.length > 0 ? (
-              <div className="review-file-tree">
-                {reviewFiles.map((file) => (
+
+          {selectedFileAnchors.length > 0 ? (
+            <div className="github-diff-stack">
+              {selectedFileAnchors.map((anchor) => {
+                const isActive = selectedAnchor ? anchorKey(anchor) === anchorKey(selectedAnchor) : false;
+                return (
                   <button
-                    className={`review-file-chip${selectedFilePath === file.path ? " active" : ""}`}
-                    key={`current:${file.path}`}
-                    onClick={() => setSelectedAnchorKey(file.anchors[0] ? anchorKey(file.anchors[0]) : null)}
+                    className={`github-diff-block${isActive ? " active" : ""}`}
+                    key={anchorKey(anchor)}
+                    onClick={() => setSelectedAnchorKey(anchorKey(anchor))}
                     type="button"
                   >
-                    <strong>{file.path}</strong>
-                    <span>{file.anchors.length} anchor(s)</span>
+                    <div className="github-diff-head">
+                      <div>
+                        <strong>{anchor.file_path}</strong>
+                        <p className="muted">
+                          original {formatRange(anchor.original_start_line, anchor.original_end_line)} {"->"} current{" "}
+                          {anchor.start_line}-{anchor.end_line}
+                        </p>
+                      </div>
+                      <span className="pill">{anchor.anchor_kind}</span>
+                    </div>
+                    <AnalysisMonacoDiffViewer
+                      anchor={anchor}
+                      className="review-mode"
+                      cluster={diffCluster}
+                      height="320px"
+                      mode="anchor"
+                    />
                   </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="review-editor-shell empty">
+              <p className="muted">No code anchors were extracted for this file yet.</p>
+            </div>
+          )}
         </section>
 
         <aside className="review-pane paper-review-pane" data-testid="paper-review-pane">
