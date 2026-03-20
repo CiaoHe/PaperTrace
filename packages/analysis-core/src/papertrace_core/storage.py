@@ -13,11 +13,20 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 from papertrace_core.models import (
     AnalysisRequest,
     AnalysisResult,
+    DiffCluster,
     JobStage,
     JobStatus,
     JobStatusResponse,
     JobSummary,
     JobTelemetryEvent,
+    ProcessorMode,
+)
+from papertrace_core.repos import RepoAccessError, ShallowGitRepoMirror
+from papertrace_core.services import (
+    build_file_code_anchors,
+    dedupe_code_anchors,
+    extract_semantic_tags,
+    load_repo_snapshot,
 )
 from papertrace_core.settings import get_settings
 
@@ -156,7 +165,11 @@ def get_job_result(job_id: str) -> AnalysisResult | None:
         record = session.get(AnalysisJobRecord, job_id)
         if record is None or record.result_payload is None:
             return None
-        return AnalysisResult.model_validate(record.result_payload)
+        result = AnalysisResult.model_validate(record.result_payload)
+        enriched = enrich_analysis_result_with_code_anchors(result, record.repo_url)
+        if enriched.model_dump(mode="json") != record.result_payload:
+            record.result_payload = enriched.model_dump(mode="json")
+        return enriched
 
 
 def update_job_status(
@@ -213,6 +226,67 @@ def list_jobs() -> list[JobStatusResponse]:
     with session_scope() as session:
         records = session.scalars(select(AnalysisJobRecord).order_by(AnalysisJobRecord.created_at.desc())).all()
         return [_build_job_status_response(record) for record in records]
+
+
+def enrich_analysis_result_with_code_anchors(result: AnalysisResult, repo_url: str) -> AnalysisResult:
+    if not result.diff_clusters:
+        return result
+    if any(cluster.code_anchors for cluster in result.diff_clusters):
+        return result
+
+    settings = get_settings()
+    repo_mirror = ShallowGitRepoMirror(settings)
+    try:
+        base_root = repo_mirror.prepare(result.selected_base_repo.repo_url)
+        target_root = repo_mirror.prepare(repo_url)
+        base_snapshot = load_repo_snapshot(base_root, settings)
+        target_snapshot = load_repo_snapshot(target_root, settings)
+    except RepoAccessError:
+        return result
+
+    enriched_clusters = [
+        _enrich_cluster_code_anchors(cluster, base_snapshot, target_snapshot, result)
+        for cluster in result.diff_clusters
+    ]
+    if all(not cluster.code_anchors for cluster in enriched_clusters):
+        return result
+
+    return result.model_copy(update={"diff_clusters": enriched_clusters})
+
+
+def _enrich_cluster_code_anchors(
+    cluster: DiffCluster,
+    base_snapshot: dict[str, str],
+    target_snapshot: dict[str, str],
+    result: AnalysisResult,
+) -> DiffCluster:
+    if cluster.code_anchors:
+        return cluster
+
+    anchors = []
+    semantic_tags = list(cluster.semantic_tags)
+    for file_path in cluster.files:
+        target_content = target_snapshot.get(file_path)
+        if target_content is None:
+            continue
+        base_content = base_snapshot.get(file_path)
+        if not semantic_tags:
+            semantic_tags = extract_semantic_tags(file_path, target_content, result.contributions)
+        anchors.extend(
+            build_file_code_anchors(
+                file_path,
+                base_content,
+                target_content,
+                semantic_tags,
+                result.contributions,
+                cluster.summary,
+            )
+        )
+
+    deduped = dedupe_code_anchors(anchors)[:6]
+    if not deduped and result.metadata.diff_analyzer_mode == ProcessorMode.FIXTURE:
+        return cluster
+    return cluster.model_copy(update={"code_anchors": deduped, "semantic_tags": semantic_tags})
 
 
 def _ensure_analysis_jobs_schema(engine: Engine) -> None:

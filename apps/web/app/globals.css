@@ -630,6 +630,7 @@ select {
 .file-tree-node.dir {
   font-weight: 700;
   color: var(--muted);
+  cursor: pointer;
 }
 
 .file-tree-node.file {
@@ -733,9 +734,49 @@ select {
   margin: 0;
 }
 
+.github-hunk-meta {
+  display: grid;
+  gap: 6px;
+  padding: 0 14px;
+}
+
+.github-hunk-meta code {
+  width: fit-content;
+  padding: 4px 8px;
+  border-radius: 10px;
+  background: rgba(24, 33, 47, 0.06);
+  border: 1px solid rgba(24, 33, 47, 0.08);
+  font-size: 12px;
+}
+
+.github-hunk-meta span {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
 .paper-review-stack {
   display: grid;
   gap: 12px;
+}
+
+.paper-claim-button {
+  width: 100%;
+  text-align: left;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(24, 33, 47, 0.08);
+  background: white;
+  cursor: pointer;
+}
+
+.paper-claim-button.active {
+  border-color: rgba(15, 118, 110, 0.32);
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.12);
+  background: rgba(215, 244, 239, 0.4);
+}
+
+.paper-claim-button p {
+  margin: 0;
 }
 
 .review-stream {

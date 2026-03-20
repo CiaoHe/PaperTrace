@@ -24,6 +24,7 @@ interface FileTreeNode {
   children: FileTreeNode[];
   isFile: boolean;
   anchorCount: number;
+  changedCount: number;
 }
 
 function buildPaperClaims(contribution: PaperContribution | null): string[] {
@@ -99,6 +100,16 @@ function buildReviewFiles(diffCluster: DiffCluster | null, codeAnchors: DiffCode
     .sort((left, right) => right.anchors.length - left.anchors.length || left.path.localeCompare(right.path));
 }
 
+function tokenize(value: string): Set<string> {
+  return new Set(
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9_]+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3),
+  );
+}
+
 function buildFileTree(files: ReviewFileEntry[]): FileTreeNode[] {
   const root: FileTreeNode[] = [];
 
@@ -117,14 +128,18 @@ function buildFileTree(files: ReviewFileEntry[]): FileTreeNode[] {
         children: [],
         isFile,
         anchorCount: isFile ? anchorCount : 0,
+        changedCount: isFile ? 1 : 0,
       };
       nodes.push(node);
     }
     if (isFile) {
       node.anchorCount = anchorCount;
+      node.changedCount = 1;
       return;
     }
     upsert(node.children, tail, anchorCount, nextPath);
+    node.anchorCount = node.children.reduce((sum, child) => sum + child.anchorCount, 0);
+    node.changedCount = node.children.reduce((sum, child) => sum + child.changedCount, 0);
   }
 
   for (const file of files) {
@@ -158,11 +173,20 @@ function formatRange(startLine: number | null | undefined, endLine: number | nul
 interface FileTreeBranchProps {
   nodes: FileTreeNode[];
   selectedFilePath: string | null;
+  expandedPaths: Set<string>;
   onSelect: (path: string) => void;
+  onToggle: (path: string) => void;
   depth?: number;
 }
 
-function FileTreeBranch({ nodes, selectedFilePath, onSelect, depth = 0 }: FileTreeBranchProps) {
+function FileTreeBranch({
+  nodes,
+  selectedFilePath,
+  expandedPaths,
+  onSelect,
+  onToggle,
+  depth = 0,
+}: FileTreeBranchProps) {
   return (
     <div className="file-tree-branch">
       {nodes.map((node) =>
@@ -175,24 +199,62 @@ function FileTreeBranch({ nodes, selectedFilePath, onSelect, depth = 0 }: FileTr
             type="button"
           >
             <span>{node.name}</span>
-            <small>{node.anchorCount}</small>
+            <small>{node.anchorCount > 0 ? `${node.anchorCount} hunks` : "0 hunks"}</small>
           </button>
         ) : (
           <div className="file-tree-group" key={node.path}>
-            <div className="file-tree-node dir" style={{ paddingLeft: `${12 + depth * 18}px` }}>
-              <span>{node.name}</span>
-            </div>
-            <FileTreeBranch
-              depth={depth + 1}
-              nodes={node.children}
-              onSelect={onSelect}
-              selectedFilePath={selectedFilePath}
-            />
+            <button
+              className="file-tree-node dir"
+              onClick={() => onToggle(node.path)}
+              style={{ paddingLeft: `${12 + depth * 18}px` }}
+              type="button"
+            >
+              <span>{expandedPaths.has(node.path) ? "▾" : "▸"} {node.name}</span>
+              <small>{node.changedCount}</small>
+            </button>
+            {expandedPaths.has(node.path) ? (
+              <FileTreeBranch
+                depth={depth + 1}
+                expandedPaths={expandedPaths}
+                nodes={node.children}
+                onSelect={onSelect}
+                onToggle={onToggle}
+                selectedFilePath={selectedFilePath}
+              />
+            ) : null}
           </div>
         ),
       )}
     </div>
   );
+}
+
+function ancestorPaths(filePath: string | null): string[] {
+  if (!filePath) {
+    return [];
+  }
+  const parts = filePath.split("/");
+  const paths: string[] = [];
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    paths.push(parts.slice(0, index + 1).join("/"));
+  }
+  return paths;
+}
+
+function selectBestAnchorForClaim(claim: string, anchors: DiffCodeAnchor[]): string | null {
+  const claimTokens = tokenize(claim);
+  let bestScore = -1;
+  let bestKey: string | null = null;
+  for (const anchor of anchors) {
+    const haystack = `${anchor.file_path}\n${anchor.reason}\n${anchor.snippet}\n${anchor.original_snippet ?? ""}`;
+    const anchorTokens = tokenize(haystack);
+    const overlap = [...claimTokens].filter((token) => anchorTokens.has(token)).length;
+    if (overlap > bestScore) {
+      bestScore = overlap;
+      bestKey = anchorKey(anchor);
+    }
+  }
+  return bestKey;
 }
 
 export function AnalysisEvidencePanel({
@@ -214,11 +276,15 @@ export function AnalysisEvidencePanel({
   const [selectedAnchorKey, setSelectedAnchorKey] = useState<string | null>(
     codeAnchors[0] ? anchorKey(codeAnchors[0]) : null,
   );
+  const [selectedClaim, setSelectedClaim] = useState<string | null>(paperClaims[0] ?? null);
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set(ancestorPaths(reviewFiles[0]?.path ?? null)));
 
   useEffect(() => {
     const nextFile = reviewFiles[0]?.path ?? null;
     setSelectedFilePath(nextFile);
     setSelectedAnchorKey(codeAnchors[0] ? anchorKey(codeAnchors[0]) : null);
+    setSelectedClaim(paperClaims[0] ?? null);
+    setExpandedPaths(new Set(ancestorPaths(nextFile)));
   }, [reviewFiles, codeAnchors]);
 
   const selectedFile = reviewFiles.find((file) => file.path === selectedFilePath) ?? reviewFiles[0] ?? null;
@@ -240,6 +306,40 @@ export function AnalysisEvidencePanel({
       setSelectedAnchorKey(selectedFileAnchors[0] ? anchorKey(selectedFileAnchors[0]) : null);
     }
   }, [selectedAnchorKey, selectedFile, selectedFileAnchors]);
+
+  function handleToggle(path: string) {
+    setExpandedPaths((current) => {
+      const next = new Set(current);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  }
+
+  function handleSelectFile(path: string) {
+    setSelectedFilePath(path);
+    for (const parentPath of ancestorPaths(path)) {
+      setExpandedPaths((current) => new Set([...current, parentPath]));
+    }
+  }
+
+  function handleSelectClaim(claim: string) {
+    setSelectedClaim(claim);
+    const nextAnchorKey = selectBestAnchorForClaim(claim, codeAnchors);
+    if (!nextAnchorKey) {
+      return;
+    }
+    const nextAnchor = codeAnchors.find((anchor) => anchorKey(anchor) === nextAnchorKey) ?? null;
+    if (!nextAnchor) {
+      return;
+    }
+    setSelectedFilePath(nextAnchor.file_path);
+    setSelectedAnchorKey(nextAnchorKey);
+    setExpandedPaths((current) => new Set([...current, ...ancestorPaths(nextAnchor.file_path)]));
+  }
 
   return (
     <div className="workbench-card evidence-review-stage">
@@ -264,7 +364,13 @@ export function AnalysisEvidencePanel({
           </div>
           <div className="github-filetree-shell">
             {fileTree.length > 0 ? (
-              <FileTreeBranch nodes={fileTree} onSelect={setSelectedFilePath} selectedFilePath={selectedFilePath} />
+              <FileTreeBranch
+                expandedPaths={expandedPaths}
+                nodes={fileTree}
+                onSelect={handleSelectFile}
+                onToggle={handleToggle}
+                selectedFilePath={selectedFilePath}
+              />
             ) : (
               <p className="muted">No file-level evidence is available for this cluster.</p>
             )}
@@ -303,6 +409,17 @@ export function AnalysisEvidencePanel({
                       </div>
                       <span className="pill">{anchor.anchor_kind}</span>
                     </div>
+                    <div className="github-hunk-meta">
+                      <code>
+                        @@ -{anchor.original_start_line ?? 0},{Math.max(
+                          (anchor.original_end_line ?? anchor.original_start_line ?? 0) -
+                            (anchor.original_start_line ?? 0) +
+                            1,
+                          0,
+                        )} +{anchor.start_line},{Math.max(anchor.end_line - anchor.start_line + 1, 0)} @@
+                      </code>
+                      <span>{anchor.reason}</span>
+                    </div>
                     <AnalysisMonacoDiffViewer
                       anchor={anchor}
                       className="review-mode"
@@ -337,9 +454,14 @@ export function AnalysisEvidencePanel({
               {paperClaims.length > 0 ? (
                 <div className="list">
                   {paperClaims.map((claim) => (
-                    <div className="item" key={claim}>
+                    <button
+                      className={`paper-claim-button${selectedClaim === claim ? " active" : ""}`}
+                      key={claim}
+                      onClick={() => handleSelectClaim(claim)}
+                      type="button"
+                    >
                       <p>{claim}</p>
-                    </div>
+                    </button>
                   ))}
                 </div>
               ) : (
