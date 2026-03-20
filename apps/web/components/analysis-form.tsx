@@ -140,7 +140,6 @@ export function AnalysisForm() {
         ? await createAnalysis({
             paperFile,
             paperSource: paperSource || undefined,
-            paperSourceKind: "pdf_file",
             repoUrl,
           })
         : await createAnalysis({

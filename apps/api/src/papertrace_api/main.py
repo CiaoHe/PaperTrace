@@ -55,6 +55,44 @@ app.add_middleware(
 )
 
 
+async def build_analysis_request_from_multipart(request: Request) -> AnalysisRequest:
+    settings = get_settings()
+    form = await request.form()
+    repo_url = form.get("repo_url")
+    paper_input = form.get("paper_input")
+    paper_source = form.get("paper_source")
+    paper_source_kind = form.get("paper_source_kind")
+    paper_file = form.get("paper_file")
+    multipart_payload = CreateAnalysisMultipartRequest.model_validate(
+        {
+            "repo_url": repo_url,
+            "paper_input": paper_input if isinstance(paper_input, str) else None,
+            "paper_source": paper_source if isinstance(paper_source, str) else None,
+            "paper_source_kind": paper_source_kind if isinstance(paper_source_kind, str) else None,
+        }
+    )
+    uploaded_file = paper_file if isinstance(paper_file, UploadFile) else None
+
+    if uploaded_file is not None:
+        if (
+            multipart_payload.paper_input is not None
+            and multipart_payload.paper_input.source_kind != PaperSourceKind.PDF_FILE
+        ):
+            raise ValueError("multipart paper_input.source_kind must be pdf_file when paper_file is provided")
+        resolved_paper_source = await persist_uploaded_pdf(uploaded_file, settings)
+    elif multipart_payload.paper_input is not None:
+        if multipart_payload.paper_input.source_kind == PaperSourceKind.PDF_FILE:
+            raise ValueError("paper_input.source_kind=pdf_file requires paper_file upload")
+        resolved_paper_source = normalize_paper_source(multipart_payload.paper_input.source_ref)
+    else:
+        resolved_paper_source = normalize_paper_source(str(multipart_payload.paper_source or ""))
+
+    return AnalysisRequest(
+        paper_source=resolved_paper_source,
+        repo_url=normalize_repo_url(multipart_payload.repo_url),
+    )
+
+
 @app.get("/api/v1/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     engine = get_engine()
@@ -148,6 +186,13 @@ def get_analyses() -> JobsResponse:
                         "type": "object",
                         "required": ["repo_url"],
                         "properties": {
+                            "paper_input": {
+                                "type": "string",
+                                "description": (
+                                    "JSON-encoded paper source envelope. "
+                                    "Use source_kind=pdf_file together with paper_file uploads."
+                                ),
+                            },
                             "paper_source": {
                                 "type": "string",
                                 "description": "arXiv URL, PDF URL, or optional text hint when uploading a PDF",
@@ -169,31 +214,10 @@ def get_analyses() -> JobsResponse:
 async def create_analysis(
     request: Request,
 ) -> CreateAnalysisResponse:
-    settings = get_settings()
     try:
-        if request.headers.get("content-type", "").startswith("multipart/form-data"):
-            form = await request.form()
-            repo_url = form.get("repo_url")
-            paper_source = form.get("paper_source")
-            paper_source_kind = form.get("paper_source_kind")
-            paper_file = form.get("paper_file")
-            multipart_payload = CreateAnalysisMultipartRequest.model_validate(
-                {
-                    "repo_url": repo_url,
-                    "paper_source": paper_source if isinstance(paper_source, str) else None,
-                    "paper_source_kind": paper_source_kind if isinstance(paper_source_kind, str) else None,
-                }
-            )
-            uploaded_file = paper_file if isinstance(paper_file, UploadFile) else None
-            resolved_paper_source = (
-                await persist_uploaded_pdf(uploaded_file, settings)
-                if uploaded_file is not None
-                else normalize_paper_source(str(multipart_payload.paper_source or ""))
-            )
-            analysis_request = AnalysisRequest(
-                paper_source=resolved_paper_source,
-                repo_url=normalize_repo_url(multipart_payload.repo_url),
-            )
+        content_type = request.headers.get("content-type", "")
+        if content_type.startswith(("multipart/form-data", "application/x-www-form-urlencoded")):
+            analysis_request = await build_analysis_request_from_multipart(request)
         else:
             raw_payload = await request.json()
             resolved_repo_url: str

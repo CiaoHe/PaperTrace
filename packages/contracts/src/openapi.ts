@@ -494,6 +494,8 @@ export interface operations {
                     };
                 };
                 "multipart/form-data": {
+                    /** @description JSON-encoded paper source envelope. Use source_kind=pdf_file together with paper_file uploads. */
+                    paper_input?: string;
                     /** @description arXiv URL, PDF URL, or optional text hint when uploading a PDF */
                     paper_source?: string;
                     /**

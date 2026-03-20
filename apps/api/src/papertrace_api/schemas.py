@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from json import loads
 from typing import Annotated, Literal
 
 from papertrace_core.models import (
@@ -10,7 +11,7 @@ from papertrace_core.models import (
     JobStatusResponse,
     PaperSourceKind,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ArxivPaperSourceInput(BaseModel):
@@ -28,8 +29,18 @@ class TextReferencePaperSourceInput(BaseModel):
     source_ref: str = Field(min_length=1)
 
 
+class PdfFilePaperSourceInput(BaseModel):
+    source_kind: Literal["pdf_file"]
+    source_ref: str | None = None
+
+
 StructuredPaperSourceInput = Annotated[
     ArxivPaperSourceInput | PdfUrlPaperSourceInput | TextReferencePaperSourceInput,
+    Field(discriminator="source_kind"),
+]
+
+MultipartPaperSourceInput = Annotated[
+    ArxivPaperSourceInput | PdfUrlPaperSourceInput | TextReferencePaperSourceInput | PdfFilePaperSourceInput,
     Field(discriminator="source_kind"),
 ]
 
@@ -46,8 +57,26 @@ class LegacyCreateAnalysisRequest(BaseModel):
 
 class CreateAnalysisMultipartRequest(BaseModel):
     repo_url: str = Field(min_length=1)
+    paper_input: MultipartPaperSourceInput | None = None
     paper_source: str | None = None
     paper_source_kind: PaperSourceKind | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def decode_paper_input(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        paper_input = value.get("paper_input")
+        if isinstance(paper_input, str):
+            value = dict(value)
+            if not paper_input.strip():
+                value["paper_input"] = None
+                return value
+            decoded = loads(paper_input)
+            if not isinstance(decoded, dict):
+                raise ValueError("paper_input must decode to an object")
+            value["paper_input"] = decoded
+        return value
 
 
 class CreateAnalysisResponse(BaseModel):

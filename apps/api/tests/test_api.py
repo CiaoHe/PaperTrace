@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -161,7 +162,15 @@ def test_create_analysis_accepts_multipart_pdf_upload() -> None:
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/analyses",
-            data={"repo_url": "https://github.com/microsoft/LoRA"},
+            data={
+                "repo_url": "https://github.com/microsoft/LoRA",
+                "paper_input": json.dumps(
+                    {
+                        "source_kind": "pdf_file",
+                        "source_ref": "lora-upload.pdf",
+                    }
+                ),
+            },
             files={
                 "paper_file": (
                     "lora-upload.pdf",
@@ -184,6 +193,55 @@ def test_create_analysis_accepts_multipart_pdf_upload() -> None:
         result_body = result_response.json()["result"]
         assert result_body["metadata"]["paper_source_kind"] == "pdf_file"
         assert result_body["contributions"]
+
+
+def test_create_analysis_accepts_structured_multipart_non_file_input() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/analyses",
+            data={
+                "repo_url": "https://github.com/microsoft/LoRA",
+                "paper_input": json.dumps(
+                    {
+                        "source_kind": "arxiv",
+                        "source_ref": "https://arxiv.org/abs/2106.09685 LoRA",
+                    }
+                ),
+            },
+        )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["job"]["paper_source"] == "https://arxiv.org/abs/2106.09685 LoRA"
+
+
+def test_create_analysis_rejects_multipart_input_kind_mismatch() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/analyses",
+            data={
+                "repo_url": "https://github.com/microsoft/LoRA",
+                "paper_input": json.dumps(
+                    {
+                        "source_kind": "arxiv",
+                        "source_ref": "https://arxiv.org/abs/2106.09685 LoRA",
+                    }
+                ),
+            },
+            files={
+                "paper_file": (
+                    "lora-upload.pdf",
+                    build_pdf_bytes(
+                        title="LoRA Upload",
+                        body="Abstract low-rank adaptation modules keep the pretrained backbone frozen.",
+                    ),
+                    "application/pdf",
+                )
+            },
+        )
+
+    assert response.status_code == 422
+    assert "source_kind must be pdf_file" in response.json()["detail"]
 
 
 def test_create_analysis_rejects_non_github_repo_url() -> None:

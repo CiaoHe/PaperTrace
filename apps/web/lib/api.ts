@@ -17,7 +17,6 @@ export type StructuredPaperSourceKind = "arxiv" | "pdf_url" | "text_reference";
 export interface CreateAnalysisUploadPayload {
   paperFile: File;
   paperSource?: string;
-  paperSourceKind?: StructuredPaperSourceKind | "pdf_file";
   repoUrl: string;
 }
 
@@ -41,12 +40,13 @@ export async function createAnalysis(
             const formData = new FormData();
             formData.set("repo_url", payload.repoUrl);
             formData.set("paper_file", payload.paperFile);
-            if (payload.paperSource) {
-              formData.set("paper_source", payload.paperSource);
-            }
-            if (payload.paperSourceKind) {
-              formData.set("paper_source_kind", payload.paperSourceKind);
-            }
+            formData.set(
+              "paper_input",
+              JSON.stringify({
+                source_kind: "pdf_file",
+                source_ref: payload.paperSource || payload.paperFile.name,
+              }),
+            );
             return formData;
           })(),
         })

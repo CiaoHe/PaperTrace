@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tarfile
 import textwrap
+from io import BytesIO
 from pathlib import Path
 
 import httpx
@@ -29,6 +31,17 @@ def build_settings() -> Settings:
             "PDF_MAX_PAGES": 4,
         }
     )
+
+
+def build_tex_archive(files: dict[str, str]) -> bytes:
+    archive = BytesIO()
+    with tarfile.open(fileobj=archive, mode="w:gz") as tar:
+        for name, text in files.items():
+            payload = text.encode("utf-8")
+            info = tarfile.TarInfo(name=name)
+            info.size = len(payload)
+            tar.addfile(info, BytesIO(payload))
+    return archive.getvalue()
 
 
 def build_pdf_bytes(title: str, body: str) -> bytes:
@@ -119,6 +132,154 @@ def test_arxiv_paper_source_fetcher_parses_atom_feed() -> None:
     assert output.paper_document.source_kind == PaperSourceKind.ARXIV
     assert output.paper_document.title.startswith("LoRA")
     assert "low-rank" in output.paper_document.text.lower()
+
+
+def test_arxiv_paper_source_fetcher_prefers_latex_source_archive() -> None:
+    atom_feed = textwrap.dedent(
+        """\
+        <?xml version="1.0" encoding="UTF-8"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <title>Fallback LoRA Title</title>
+            <summary>Fallback abstract from Atom metadata.</summary>
+          </entry>
+        </feed>
+        """
+    )
+    tex_archive = build_tex_archive(
+        {
+            "README.md": "# ignored",
+            "paper.tex": textwrap.dedent(
+                """\
+                \\documentclass{article}
+                \\title{LoRA from Source Archive}
+                \\begin{document}
+                \\maketitle
+                \\begin{abstract}
+                We introduce source-backed low-rank adaptation with explicit injected rank modules.
+                \\end{abstract}
+                \\section{Introduction}
+                The source archive exposes the paper body rather than metadata only.
+                \\section{Method}
+                We inject trainable rank decomposition matrices into transformer layers.
+                \\end{document}
+                """
+            ),
+        }
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/query"):
+            return httpx.Response(200, text=atom_feed)
+        if request.url.path.endswith("/e-print/2106.09685"):
+            return httpx.Response(200, content=tex_archive)
+        raise AssertionError(f"Unexpected request path: {request.url}")
+
+    fetcher = ArxivPaperSourceFetcher(
+        settings=build_settings(),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    output = fetcher.fetch(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2106.09685",
+            repo_url="https://github.com/microsoft/LoRA",
+        )
+    )
+
+    assert output.mode == ProcessorMode.REMOTE_FETCH
+    assert output.warnings == []
+    assert output.paper_document.title == "LoRA from Source Archive"
+    assert output.paper_document.abstract.startswith("We introduce source-backed low-rank adaptation")
+    assert [section.heading for section in output.paper_document.sections] == ["Introduction", "Method"]
+    assert "rank decomposition matrices" in output.paper_document.text.lower()
+
+
+def test_arxiv_paper_source_fetcher_falls_back_to_metadata_when_source_fetch_fails() -> None:
+    atom_feed = textwrap.dedent(
+        """\
+        <?xml version="1.0" encoding="UTF-8"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <title>FlashAttention Metadata Title</title>
+            <summary>IO-aware exact attention from metadata.</summary>
+          </entry>
+        </feed>
+        """
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/query"):
+            return httpx.Response(200, text=atom_feed)
+        if request.url.path.endswith("/e-print/2205.14135"):
+            return httpx.Response(404, text="not found")
+        raise AssertionError(f"Unexpected request path: {request.url}")
+
+    fetcher = ArxivPaperSourceFetcher(
+        settings=build_settings(),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    output = fetcher.fetch(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2205.14135",
+            repo_url="https://github.com/Dao-AILab/flash-attention",
+        )
+    )
+
+    assert output.mode == ProcessorMode.REMOTE_FETCH
+    assert "source fetch failed" in output.warnings[0]
+    assert output.paper_document.title == "FlashAttention Metadata Title"
+    assert output.paper_document.sections[0].heading == "Abstract"
+    assert "metadata" in output.paper_document.text.lower()
+
+
+def test_arxiv_paper_source_fetcher_accepts_raw_tex_payload() -> None:
+    atom_feed = textwrap.dedent(
+        """\
+        <?xml version="1.0" encoding="UTF-8"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <title>DPO Metadata Title</title>
+            <summary>Metadata-only summary.</summary>
+          </entry>
+        </feed>
+        """
+    )
+    raw_tex = textwrap.dedent(
+        """\
+        \\documentclass{article}
+        \\title{Direct Preference Optimization}
+        \\begin{document}
+        \\begin{abstract}
+        We replace reward-model optimization with a direct preference objective.
+        \\end{abstract}
+        \\section{Approach}
+        The objective can be optimized with standard language-model fine-tuning.
+        \\end{document}
+        """
+    ).encode("utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/query"):
+            return httpx.Response(200, text=atom_feed)
+        if request.url.path.endswith("/e-print/2305.18290"):
+            return httpx.Response(200, content=raw_tex)
+        raise AssertionError(f"Unexpected request path: {request.url}")
+
+    fetcher = ArxivPaperSourceFetcher(
+        settings=build_settings(),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    output = fetcher.fetch(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2305.18290",
+            repo_url="https://github.com/huggingface/trl",
+        )
+    )
+
+    assert output.mode == ProcessorMode.REMOTE_FETCH
+    assert output.paper_document.title == "Direct Preference Optimization"
+    assert output.paper_document.sections[0].heading == "Approach"
+    assert "direct preference objective" in output.paper_document.abstract.lower()
 
 
 def test_chained_paper_source_fetcher_falls_back_to_fixture() -> None:

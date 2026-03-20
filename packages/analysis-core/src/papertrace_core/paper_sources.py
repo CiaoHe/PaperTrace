@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import tarfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from io import BytesIO
@@ -33,6 +34,16 @@ PDF_HEADING_RE = re.compile(
     r"method|methods|approach|architecture|experiments|evaluation|results|discussion|conclusion)s?$",
     flags=re.IGNORECASE,
 )
+LATEX_COMMENT_RE = re.compile(r"(?<!\\)%.*$")
+LATEX_TITLE_RE = re.compile(r"\\title\{(?P<value>.*?)\}", flags=re.DOTALL)
+LATEX_ABSTRACT_RE = re.compile(
+    r"\\begin\{abstract\}(?P<value>.*?)\\end\{abstract\}",
+    flags=re.DOTALL,
+)
+LATEX_SECTION_RE = re.compile(
+    r"\\(?:sub)*section\*?\{(?P<heading>.*?)\}(?P<body>.*?)(?=(?:\\(?:sub)*section\*?\{)|\\end\{document\}|$)",
+    flags=re.DOTALL,
+)
 
 
 class PaperFetchError(RuntimeError):
@@ -62,6 +73,109 @@ def build_arxiv_text(title: str, abstract: str) -> str:
 
 def compact_text(value: str) -> str:
     return "\n".join(line.strip() for line in value.splitlines() if line.strip())
+
+
+def strip_latex_comments(value: str) -> str:
+    return "\n".join(LATEX_COMMENT_RE.sub("", line) for line in value.splitlines())
+
+
+def flatten_latex_text(value: str) -> str:
+    normalized = strip_latex_comments(value)
+    normalized = re.sub(r"\\(?:label|cite|ref|eqref|url|footnote)\{.*?\}", " ", normalized, flags=re.DOTALL)
+    normalized = re.sub(r"\\(?:textbf|textit|emph|mathbf|mathit)\{(.*?)\}", r"\1", normalized, flags=re.DOTALL)
+    normalized = re.sub(r"\\[A-Za-z]+\*?(?:\[[^\]]*\])?\{(.*?)\}", r"\1", normalized, flags=re.DOTALL)
+    normalized = re.sub(r"\\[A-Za-z]+\*?(?:\[[^\]]*\])?", " ", normalized)
+    normalized = normalized.replace("{", " ").replace("}", " ")
+    normalized = normalized.replace("~", " ").replace("\\", " ")
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip()
+
+
+def extract_latex_title(source_text: str) -> str | None:
+    match = LATEX_TITLE_RE.search(source_text)
+    if match is None:
+        return None
+    title = flatten_latex_text(match.group("value"))
+    return title or None
+
+
+def extract_latex_abstract(source_text: str) -> str | None:
+    match = LATEX_ABSTRACT_RE.search(source_text)
+    if match is None:
+        return None
+    abstract = flatten_latex_text(match.group("value"))
+    return abstract or None
+
+
+def extract_latex_sections(source_text: str) -> list[PaperSection]:
+    sections: list[PaperSection] = []
+    for match in LATEX_SECTION_RE.finditer(source_text):
+        heading = flatten_latex_text(match.group("heading"))
+        body = flatten_latex_text(match.group("body"))
+        if heading and body:
+            sections.append(PaperSection(heading=heading, text=body[:5000]))
+    return sections
+
+
+def build_latex_document(
+    source_text: str,
+    *,
+    source_ref: str,
+    metadata_title: str,
+    metadata_abstract: str,
+) -> PaperDocument:
+    title = extract_latex_title(source_text) or metadata_title
+    abstract = extract_latex_abstract(source_text) or metadata_abstract
+    sections = extract_latex_sections(source_text)
+    section_text = "\n\n".join(f"{section.heading}\n{section.text}" for section in sections)
+    text = compact_text("\n\n".join(part for part in [title, "Abstract", abstract, section_text] if part.strip()))
+    return PaperDocument(
+        source_kind=PaperSourceKind.ARXIV,
+        source_ref=source_ref,
+        title=title,
+        abstract=abstract,
+        sections=sections or ([PaperSection(heading="Abstract", text=abstract)] if abstract else []),
+        text=text,
+    )
+
+
+def select_primary_tex_source(archive_bytes: bytes) -> str | None:
+    try:
+        with tarfile.open(fileobj=BytesIO(archive_bytes), mode="r:*") as archive:
+            tex_payloads: list[tuple[int, str]] = []
+            for member in archive.getmembers():
+                if not member.isfile() or not member.name.lower().endswith(".tex"):
+                    continue
+                extracted = archive.extractfile(member)
+                if extracted is None:
+                    continue
+                raw_bytes = extracted.read()
+                try:
+                    text = raw_bytes.decode("utf-8")
+                except UnicodeDecodeError:
+                    try:
+                        text = raw_bytes.decode("latin-1")
+                    except UnicodeDecodeError:
+                        continue
+                score = len(text)
+                if "\\documentclass" in text:
+                    score += 100_000
+                if "\\begin{document}" in text:
+                    score += 50_000
+                tex_payloads.append((score, text))
+    except tarfile.TarError:
+        for encoding in ("utf-8", "latin-1"):
+            try:
+                decoded = archive_bytes.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+            return decoded if "\\documentclass" in decoded or "\\begin{document}" in decoded else None
+        return None
+
+    if not tex_payloads:
+        return None
+    tex_payloads.sort(key=lambda item: item[0], reverse=True)
+    return tex_payloads[0][1]
 
 
 def infer_pdf_title(text: str, source_ref: str) -> str:
@@ -166,6 +280,38 @@ class ArxivPaperSourceFetcher:
     settings: Settings
     client: httpx.Client | None = None
 
+    def _fetch_arxiv_source_document(
+        self,
+        client: httpx.Client,
+        *,
+        arxiv_id: str,
+        metadata_title: str,
+        metadata_abstract: str,
+    ) -> tuple[PaperDocument | None, str | None]:
+        source_endpoint = f"{self.settings.arxiv_api_base_url.rstrip('/')}/e-print/{arxiv_id}"
+        try:
+            response = client.get(source_endpoint, follow_redirects=True)
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            return None, f"arXiv source fetch failed for {arxiv_id}: {exc}"
+
+        if len(response.content) > self.settings.arxiv_source_max_bytes:
+            return None, f"arXiv source archive exceeded ARXIV_SOURCE_MAX_BYTES for {arxiv_id}"
+
+        source_text = select_primary_tex_source(response.content)
+        if source_text is None:
+            return None, f"arXiv source archive for {arxiv_id} did not contain a usable TeX document"
+
+        return (
+            build_latex_document(
+                source_text,
+                source_ref=f"https://arxiv.org/abs/{arxiv_id}",
+                metadata_title=metadata_title,
+                metadata_abstract=metadata_abstract,
+            ),
+            None,
+        )
+
     def fetch(
         self,
         request: AnalysisRequest,
@@ -181,6 +327,7 @@ class ArxivPaperSourceFetcher:
         close_client = self.client is None
         client = self.client or httpx.Client(timeout=self.settings.arxiv_timeout_seconds)
         endpoint = f"{self.settings.arxiv_api_base_url.rstrip('/')}/api/query"
+        warnings: list[str] = []
 
         try:
             response = client.get(endpoint, params={"id_list": arxiv_id})
@@ -196,6 +343,16 @@ class ArxivPaperSourceFetcher:
             abstract = (entry.findtext("atom:summary", default="", namespaces=ATOM_NS) or "").strip()
             if not title or not abstract:
                 raise PaperFetchError(f"Incomplete arXiv metadata returned for {arxiv_id}")
+            if progress is not None:
+                progress(JobStage.PAPER_FETCH, 0.82, f"Fetching arXiv LaTeX source for {arxiv_id}.")
+            source_document, source_warning = self._fetch_arxiv_source_document(
+                client,
+                arxiv_id=arxiv_id,
+                metadata_title=title,
+                metadata_abstract=abstract,
+            )
+            if source_warning is not None:
+                warnings.append(source_warning)
         except (ET.ParseError, httpx.HTTPError) as exc:
             raise PaperFetchError(f"Failed to fetch arXiv content for {arxiv_id}: {exc}") from exc
         finally:
@@ -203,9 +360,18 @@ class ArxivPaperSourceFetcher:
                 client.close()
 
         if progress is not None:
-            progress(JobStage.PAPER_FETCH, 1.0, f"Loaded arXiv abstract for {title}.")
+            progress(
+                JobStage.PAPER_FETCH,
+                1.0,
+                (
+                    f"Loaded arXiv source-backed paper for {title}."
+                    if source_document is not None
+                    else f"Loaded arXiv abstract for {title}."
+                ),
+            )
         return FetchOutput(
-            paper_document=PaperDocument(
+            paper_document=source_document
+            or PaperDocument(
                 source_kind=PaperSourceKind.ARXIV,
                 source_ref=f"https://arxiv.org/abs/{arxiv_id}",
                 title=title,
@@ -214,7 +380,7 @@ class ArxivPaperSourceFetcher:
                 text=build_arxiv_text(title, abstract),
             ),
             mode=ProcessorMode.REMOTE_FETCH,
-            warnings=[],
+            warnings=warnings,
         )
 
 
