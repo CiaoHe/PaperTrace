@@ -272,6 +272,36 @@ def test_heuristic_paper_parser_extracts_enumerated_contributions_from_sections(
     assert any(
         "retrieval distillation objective" in contribution.title.lower() for contribution in result.contributions
     )
+    assert "Paper parser did not find an explicit method section." in result.warnings
+
+
+def test_heuristic_paper_parser_reports_gap_when_only_abstract_is_available() -> None:
+    request = AnalysisRequest(
+        paper_source="/tmp/abstract-only-paper.pdf",
+        repo_url="https://github.com/example/research-repo",
+    )
+    paper_document = PaperDocument(
+        source_kind=PaperSourceKind.PDF_FILE,
+        source_ref=request.paper_source,
+        title="Compact Sparse Routing",
+        abstract=(
+            "We introduce a sparse routing encoder for document retrieval and show strong local validation results."
+        ),
+        sections=[],
+        text=(
+            "Compact Sparse Routing\n"
+            "Abstract\n"
+            "We introduce a sparse routing encoder for document retrieval and show strong local validation results."
+        ),
+    )
+
+    result = HeuristicPaperParser().parse(request, paper_document)
+
+    assert result.mode == ProcessorMode.HEURISTIC
+    assert result.contributions
+    assert "Paper parser did not find an explicit contributions section." in result.warnings
+    assert "Paper parser did not find an explicit method section." in result.warnings
+    assert "Paper parser relied on abstract-level evidence only." in result.warnings
 
 
 def test_repo_tracer_extracts_repo_mentions_from_paper_document_text() -> None:

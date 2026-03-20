@@ -155,6 +155,12 @@ SECTION_HEADING_BOOSTS: dict[str, int] = {
     "overview": 2,
     "experiments": 1,
 }
+SECTION_KIND_MARKERS: dict[str, tuple[str, ...]] = {
+    "contributions": ("contributions", "our contributions", "main contributions"),
+    "method": ("method", "methods", "approach", "architecture"),
+    "abstract": ("abstract",),
+    "experiments": ("experiments", "evaluation", "results"),
+}
 
 
 def infer_contributions(case_slug: str, title: str, text: str) -> list[PaperContribution]:
@@ -214,7 +220,18 @@ def infer_document_contributions(case_slug: str, paper_document: PaperDocument) 
 def dedupe_contributions(contributions: list[PaperContribution]) -> list[PaperContribution]:
     deduped: dict[str, PaperContribution] = {}
     for contribution in contributions:
-        deduped.setdefault(contribution.title.lower(), contribution)
+        key = contribution.title.lower()
+        existing = deduped.get(key)
+        if existing is None:
+            deduped[key] = contribution
+            continue
+        deduped[key] = PaperContribution(
+            id=existing.id,
+            title=existing.title,
+            section=existing.section if existing.section != "Abstract" else contribution.section,
+            keywords=list(dict.fromkeys([*existing.keywords, *contribution.keywords]))[:6],
+            impl_hints=list(dict.fromkeys([*existing.impl_hints, *contribution.impl_hints]))[:4],
+        )
     return list(deduped.values())
 
 
@@ -242,6 +259,14 @@ def section_heading_boost(section_heading: str) -> int:
         if marker in normalized:
             return boost
     return 0
+
+
+def classify_section_heading(section_heading: str) -> str:
+    normalized = normalize_heading(section_heading)
+    for section_kind, markers in SECTION_KIND_MARKERS.items():
+        if any(marker in normalized for marker in markers):
+            return section_kind
+    return "other"
 
 
 def score_contribution_sentence(sentence: str) -> int:
@@ -306,6 +331,11 @@ def infer_structured_contributions(paper_document: PaperDocument) -> list[PaperC
     ranked_candidates: list[tuple[int, str, str]] = []
     for section in iter_candidate_sections(paper_document):
         boost = section_heading_boost(section.heading)
+        section_kind = classify_section_heading(section.heading)
+        if section_kind == "contributions":
+            boost += 2
+        elif section_kind == "method":
+            boost += 1
         for item in extract_list_items(section.text):
             score = score_contribution_sentence(item) + boost + 2
             ranked_candidates.append((score, section.heading, item))
@@ -333,6 +363,20 @@ def infer_structured_contributions(paper_document: PaperDocument) -> list[PaperC
         if len(contributions) >= 4:
             break
     return dedupe_contributions(contributions)
+
+
+def parser_gap_warnings(paper_document: PaperDocument, contributions: list[PaperContribution]) -> list[str]:
+    section_kinds = {classify_section_heading(section.heading) for section in iter_candidate_sections(paper_document)}
+    warnings: list[str] = []
+    if "contributions" not in section_kinds:
+        warnings.append("Paper parser did not find an explicit contributions section.")
+    if "method" not in section_kinds:
+        warnings.append("Paper parser did not find an explicit method section.")
+    if contributions and all(contribution.section.lower() == "abstract" for contribution in contributions):
+        warnings.append("Paper parser relied on abstract-level evidence only.")
+    if len(contributions) < 2 and len(paper_document.text) > 1200:
+        warnings.append("Paper parser extracted limited contribution structure from a longer document.")
+    return warnings
 
 
 def collect_unmatched_ids(

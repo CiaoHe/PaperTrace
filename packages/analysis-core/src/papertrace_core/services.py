@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,7 +10,12 @@ from papertrace_core.cases import detect_case_slug
 from papertrace_core.fixtures import (
     load_golden_case,
 )
-from papertrace_core.heuristics import collect_unmatched_ids, infer_document_contributions, infer_mappings
+from papertrace_core.heuristics import (
+    collect_unmatched_ids,
+    infer_document_contributions,
+    infer_mappings,
+    parser_gap_warnings,
+)
 from papertrace_core.inputs import detect_paper_source_kind, normalize_repo_url
 from papertrace_core.interfaces import (
     ContributionMapper,
@@ -55,7 +61,9 @@ from papertrace_core.settings import Settings, get_settings
 STRATEGY_PRIORITY: dict[str, int] = {
     "github_fork": 5,
     "readme_declaration": 4,
+    "framework_signature": 4,
     "paper_mention": 3,
+    "dependency_archaeology": 3,
     "code_reference": 2,
     "code_fingerprint": 2,
     "fallback": 1,
@@ -82,6 +90,52 @@ IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 SYMBOL_RE = re.compile(r"\b(?:class|def)\s+([A-Za-z_][A-Za-z0-9_]*)")
 IMPORT_RE = re.compile(r"\b(?:from|import)\s+([A-Za-z_][A-Za-z0-9_\.]*)")
 FINGERPRINT_SCORE_THRESHOLD = 0.12
+DIRECT_DEPENDENCY_RE = re.compile(r"(?:git\+)?(https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?)")
+
+
+@dataclass(frozen=True)
+class FrameworkSignature:
+    repo_url: str
+    imports: tuple[str, ...]
+    base_classes: tuple[str, ...]
+    dir_markers: tuple[str, ...]
+
+
+FRAMEWORK_SIGNATURES: dict[str, FrameworkSignature] = {
+    "transformers": FrameworkSignature(
+        repo_url="https://github.com/huggingface/transformers",
+        imports=("transformers", "AutoModelForCausalLM", "PreTrainedModel", "from_pretrained"),
+        base_classes=("PreTrainedModel", "PretrainedConfig", "PreTrainedTokenizer"),
+        dir_markers=("src/transformers/models",),
+    ),
+    "trl": FrameworkSignature(
+        repo_url="https://github.com/huggingface/trl",
+        imports=("trl", "DPOTrainer", "PPOTrainer", "reward_trainer"),
+        base_classes=("DPOTrainer", "PPOTrainer"),
+        dir_markers=("trl/trainer",),
+    ),
+    "triton": FrameworkSignature(
+        repo_url="https://github.com/openai/triton",
+        imports=("triton", "triton.language", "triton.jit"),
+        base_classes=(),
+        dir_markers=("python/triton",),
+    ),
+    "fairseq": FrameworkSignature(
+        repo_url="https://github.com/facebookresearch/fairseq",
+        imports=("fairseq", "register_model", "register_task", "FairseqCriterion"),
+        base_classes=("BaseFairseqModel", "FairseqCriterion", "FairseqTask"),
+        dir_markers=("fairseq_cli", "criterions"),
+    ),
+}
+
+DEPENDENCY_REPO_MAP: dict[str, str] = {
+    "transformers": "https://github.com/huggingface/transformers",
+    "trl": "https://github.com/huggingface/trl",
+    "triton": "https://github.com/openai/triton",
+    "fairseq": "https://github.com/facebookresearch/fairseq",
+    "peft": "https://github.com/huggingface/peft",
+    "accelerate": "https://github.com/huggingface/accelerate",
+}
 
 
 def dedupe_preserving_order(items: list[str]) -> list[str]:
@@ -144,6 +198,31 @@ def load_repo_snapshot(repo_root: Path, settings: Settings) -> dict[str, str]:
         except UnicodeDecodeError:
             continue
     return snapshot
+
+
+def read_repo_file(repo_root: Path, relative_path: str) -> str | None:
+    file_path = repo_root / relative_path
+    if not file_path.is_file():
+        return None
+    try:
+        return file_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def load_repo_supporting_files(repo_root: Path) -> dict[str, str]:
+    supporting_paths = (
+        "requirements.txt",
+        "requirements-dev.txt",
+        "pyproject.toml",
+        "setup.py",
+        ".gitmodules",
+    )
+    return {
+        relative_path: content
+        for relative_path in supporting_paths
+        if (content := read_repo_file(repo_root, relative_path)) is not None
+    }
 
 
 def classify_change_type(
@@ -235,7 +314,7 @@ class HeuristicPaperParser:
             return ParseOutput(
                 contributions=contributions,
                 mode=ProcessorMode.HEURISTIC,
-                warnings=warnings,
+                warnings=[*warnings, *parser_gap_warnings(paper_document, contributions)],
             )
         fixture = load_golden_case(case_slug)
         return ParseOutput(
@@ -328,6 +407,42 @@ def extract_alias_repo_urls(text: str) -> list[str]:
         if text_contains_alias(haystack, alias):
             repo_urls.append(repo_url)
     return dedupe_preserving_order(repo_urls)
+
+
+def extract_dependency_names(raw_value: str) -> list[str]:
+    dependency_names: list[str] = []
+    for line in raw_value.splitlines():
+        normalized = line.strip()
+        if not normalized or normalized.startswith("#"):
+            continue
+        dependency_name = re.split(r"[<>=!~\[\]\s]", normalized, maxsplit=1)[0].strip().lower()
+        dependency_name = dependency_name.removeprefix("-e").strip()
+        if dependency_name:
+            dependency_names.append(dependency_name)
+    return dependency_names
+
+
+def parse_pyproject_dependencies(content: str) -> list[str]:
+    try:
+        payload = tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        return []
+
+    dependencies: list[str] = []
+    project = payload.get("project")
+    if isinstance(project, dict):
+        raw_dependencies = project.get("dependencies")
+        if isinstance(raw_dependencies, list):
+            dependencies.extend(entry for entry in raw_dependencies if isinstance(entry, str))
+
+    tool = payload.get("tool")
+    if isinstance(tool, dict):
+        poetry = tool.get("poetry")
+        if isinstance(poetry, dict):
+            poetry_dependencies = poetry.get("dependencies")
+            if isinstance(poetry_dependencies, dict):
+                dependencies.extend(key for key in poetry_dependencies if key != "python")
+    return extract_dependency_names("\n".join(dependencies))
 
 
 def build_readme_candidates(
@@ -480,6 +595,126 @@ def build_code_reference_candidates(
     return dedupe_repo_candidates(candidates), []
 
 
+def build_framework_signature_candidates(
+    request: AnalysisRequest,
+    repo_mirror: RepoMirror | None,
+    settings: Settings | None,
+) -> tuple[list[BaseRepoCandidate], list[str]]:
+    if repo_mirror is None or settings is None:
+        return [], []
+
+    try:
+        target_root = repo_mirror.prepare(request.repo_url)
+        target_snapshot = load_repo_snapshot(target_root, settings)
+    except (RepoAccessError, KeyError) as exc:
+        return [], [f"Repo tracer skipped framework-signature analysis: {exc}"]
+
+    snapshot_text = "\n".join(
+        f"{relative_path}\n{content}" for relative_path, content in target_snapshot.items()
+    ).lower()
+    candidates: list[BaseRepoCandidate] = []
+    for framework_name, signature in FRAMEWORK_SIGNATURES.items():
+        import_hits = [item for item in signature.imports if item.lower() in snapshot_text]
+        base_hits = [item for item in signature.base_classes if item.lower() in snapshot_text]
+        dir_hits = [
+            marker
+            for marker in signature.dir_markers
+            if any(relative_path.startswith(marker) for relative_path in target_snapshot)
+        ]
+        total_hits = len(import_hits) + len(base_hits) + len(dir_hits)
+        if total_hits == 0:
+            continue
+        evidence_parts: list[str] = []
+        if import_hits:
+            evidence_parts.append(f"imports/signatures: {', '.join(import_hits[:3])}")
+        if base_hits:
+            evidence_parts.append(f"base classes: {', '.join(base_hits[:3])}")
+        if dir_hits:
+            evidence_parts.append(f"dir markers: {', '.join(dir_hits[:2])}")
+        candidates.append(
+            BaseRepoCandidate(
+                repo_url=signature.repo_url,
+                strategy="framework_signature",
+                confidence=round(min(0.72 + 0.05 * total_hits, 0.94), 2),
+                evidence=f"Framework signature matched {framework_name} via {'; '.join(evidence_parts)}.",
+            )
+        )
+    return dedupe_repo_candidates(candidates), []
+
+
+def build_dependency_archaeology_candidates(
+    request: AnalysisRequest,
+    repo_mirror: RepoMirror | None,
+) -> tuple[list[BaseRepoCandidate], list[str]]:
+    if repo_mirror is None:
+        return [], []
+
+    try:
+        target_root = repo_mirror.prepare(request.repo_url)
+    except (RepoAccessError, KeyError) as exc:
+        return [], [f"Repo tracer skipped dependency-archaeology analysis: {exc}"]
+
+    supporting_files = load_repo_supporting_files(target_root)
+    candidates: list[BaseRepoCandidate] = []
+
+    direct_dependency_hits: list[str] = []
+    for relative_path, content in supporting_files.items():
+        for matched_url in DIRECT_DEPENDENCY_RE.findall(content):
+            try:
+                repo_url = normalize_repo_url(matched_url)
+            except ValueError:
+                continue
+            direct_dependency_hits.append(repo_url)
+            candidates.append(
+                BaseRepoCandidate(
+                    repo_url=repo_url,
+                    strategy="dependency_archaeology",
+                    confidence=0.93,
+                    evidence=f"Dependency configuration {relative_path} directly references {repo_url}.",
+                )
+            )
+
+    dependency_names = extract_dependency_names(
+        "\n".join(
+            [
+                supporting_files.get("requirements.txt", ""),
+                supporting_files.get("requirements-dev.txt", ""),
+                supporting_files.get("setup.py", ""),
+            ]
+        )
+    )
+    dependency_names.extend(parse_pyproject_dependencies(supporting_files.get("pyproject.toml", "")))
+    for dependency_name in dedupe_preserving_order(dependency_names):
+        mapped_repo_url = DEPENDENCY_REPO_MAP.get(dependency_name)
+        if mapped_repo_url is None or mapped_repo_url in direct_dependency_hits:
+            continue
+        candidates.append(
+            BaseRepoCandidate(
+                repo_url=mapped_repo_url,
+                strategy="dependency_archaeology",
+                confidence=0.79,
+                evidence=f"Dependency configuration includes the {dependency_name} framework package.",
+            )
+        )
+
+    gitmodules = supporting_files.get(".gitmodules", "")
+    for matched_url in DIRECT_DEPENDENCY_RE.findall(gitmodules):
+        try:
+            repo_url = normalize_repo_url(matched_url)
+        except ValueError:
+            continue
+        candidates.append(
+            BaseRepoCandidate(
+                repo_url=repo_url,
+                strategy="dependency_archaeology",
+                confidence=0.91,
+                evidence=f"Repository submodule configuration references {repo_url}.",
+            )
+        )
+
+    return dedupe_repo_candidates(candidates), []
+
+
 def build_code_fingerprint_candidates(
     request: AnalysisRequest,
     repo_mirror: RepoMirror | None,
@@ -553,6 +788,19 @@ class StrategyDrivenRepoTracer:
 
         paper_candidates = build_paper_mention_candidates(paper_document)
         candidates.extend(paper_candidates)
+        framework_signature_candidates, framework_signature_warnings = build_framework_signature_candidates(
+            request,
+            self.repo_mirror,
+            self.settings,
+        )
+        warnings.extend(framework_signature_warnings)
+        candidates.extend(framework_signature_candidates)
+        dependency_candidates, dependency_warnings = build_dependency_archaeology_candidates(
+            request,
+            self.repo_mirror,
+        )
+        warnings.extend(dependency_warnings)
+        candidates.extend(dependency_candidates)
         code_reference_candidates, code_reference_warnings = build_code_reference_candidates(
             request,
             self.repo_mirror,
@@ -564,6 +812,8 @@ class StrategyDrivenRepoTracer:
             [
                 *([metadata_output.fork_parent] if metadata_output.fork_parent else []),
                 *[candidate.repo_url for candidate in paper_candidates],
+                *[candidate.repo_url for candidate in framework_signature_candidates],
+                *[candidate.repo_url for candidate in dependency_candidates],
                 *[candidate.repo_url for candidate in code_reference_candidates],
                 *extract_github_repo_urls(metadata_output.readme_text),
                 *extract_github_repo_urls(metadata_output.notes),

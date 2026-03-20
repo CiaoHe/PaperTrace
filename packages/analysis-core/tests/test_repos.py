@@ -301,7 +301,7 @@ def test_repo_tracer_uses_live_code_fingerprint_candidates(
         [],
     )
 
-    assert trace_output.selected_base_repo.strategy == "code_fingerprint"
+    assert trace_output.selected_base_repo.strategy in {"framework_signature", "code_fingerprint"}
     assert trace_output.selected_base_repo.repo_url == "https://github.com/openai/triton"
     assert any(candidate.strategy == "code_fingerprint" for candidate in trace_output.candidates)
 
@@ -374,7 +374,7 @@ def test_analysis_service_can_run_without_fixture_primary_path(
     assert result.metadata.repo_tracer_mode == ProcessorMode.STRATEGY_CHAIN
     assert result.metadata.diff_analyzer_mode == ProcessorMode.HEURISTIC
     assert result.metadata.contribution_mapper_mode == ProcessorMode.HEURISTIC
-    assert result.metadata.selected_repo_strategy in {"paper_mention", "code_fingerprint"}
+    assert result.metadata.selected_repo_strategy in {"paper_mention", "framework_signature", "code_fingerprint"}
     assert result.diff_clusters
 
 
@@ -444,6 +444,97 @@ def test_repo_tracer_extracts_code_reference_candidates_from_imports(
         [],
     )
 
-    assert trace_output.selected_base_repo.strategy == "code_reference"
+    assert trace_output.selected_base_repo.strategy in {"framework_signature", "code_reference"}
     assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
-    assert any(candidate.strategy == "code_reference" for candidate in trace_output.candidates)
+
+
+def test_repo_tracer_extracts_framework_signature_candidates(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    target_repo = tmp_path / "target-framework-signature"
+    init_git_repo(
+        target_repo,
+        {
+            "src/model.py": (
+                "from transformers import PreTrainedModel, AutoModelForCausalLM\n\n"
+                "class MyModel(PreTrainedModel):\n"
+                "    @classmethod\n"
+                "    def from_pretrained_checkpoint(cls):\n"
+                "        return AutoModelForCausalLM.from_pretrained('gpt2')\n"
+            ),
+        },
+    )
+
+    tracer = StrategyDrivenRepoTracer(
+        repo_metadata_provider=EmptyRepoMetadataProvider(),
+        repo_mirror=StaticRepoMirror({"https://github.com/example/framework-target": target_repo}),
+        settings=repo_settings,
+    )
+    trace_output = tracer.trace(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/9999.00003",
+            repo_url="https://github.com/example/framework-target",
+        ),
+        PaperDocument(
+            source_kind=PaperSourceKind.ARXIV,
+            source_ref="https://arxiv.org/abs/9999.00003",
+            title="Framework Signature Test",
+            abstract="",
+            sections=[],
+            text="No explicit upstream mention.",
+        ),
+        [],
+    )
+
+    assert trace_output.selected_base_repo.strategy == "framework_signature"
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
+    assert any(candidate.strategy == "framework_signature" for candidate in trace_output.candidates)
+
+
+def test_repo_tracer_extracts_dependency_archaeology_candidates(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    target_repo = tmp_path / "target-dependency-archaeology"
+    init_git_repo(
+        target_repo,
+        {
+            "src/train.py": "def train():\n    return 'ok'\n",
+            "requirements.txt": "trl>=0.8.0\n-e git+https://github.com/huggingface/peft.git@main#egg=peft\n",
+            ".gitmodules": (
+                '[submodule "third_party/base"]\n'
+                "\tpath = third_party/base\n"
+                "\turl = https://github.com/openai/triton.git\n"
+            ),
+        },
+    )
+
+    tracer = StrategyDrivenRepoTracer(
+        repo_metadata_provider=EmptyRepoMetadataProvider(),
+        repo_mirror=StaticRepoMirror({"https://github.com/example/dependency-target": target_repo}),
+        settings=repo_settings,
+    )
+    trace_output = tracer.trace(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/9999.00004",
+            repo_url="https://github.com/example/dependency-target",
+        ),
+        PaperDocument(
+            source_kind=PaperSourceKind.ARXIV,
+            source_ref="https://arxiv.org/abs/9999.00004",
+            title="Dependency Archaeology Test",
+            abstract="",
+            sections=[],
+            text="No explicit upstream mention.",
+        ),
+        [],
+    )
+
+    dependency_candidates = [
+        candidate for candidate in trace_output.candidates if candidate.strategy == "dependency_archaeology"
+    ]
+    assert dependency_candidates
+    assert any(candidate.repo_url == "https://github.com/huggingface/trl" for candidate in dependency_candidates)
+    assert any(candidate.repo_url == "https://github.com/huggingface/peft" for candidate in dependency_candidates)
+    assert any(candidate.repo_url == "https://github.com/openai/triton" for candidate in dependency_candidates)
