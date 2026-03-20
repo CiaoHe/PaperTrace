@@ -25,7 +25,7 @@ from papertrace_core.heuristics import (
     parser_gap_warnings,
     tokenize,
 )
-from papertrace_core.inputs import detect_paper_source_kind, normalize_repo_url
+from papertrace_core.inputs import detect_paper_source_kind, extract_arxiv_id, normalize_repo_url
 from papertrace_core.interfaces import (
     ContributionMapper,
     DiffAnalyzer,
@@ -78,6 +78,8 @@ STRATEGY_PRIORITY: dict[str, int] = {
     "metadata_url": 4,
     "paper_mention": 3,
     "dependency_archaeology": 3,
+    "citation_graph": 3,
+    "author_graph": 3,
     "temporal_topic_search": 3,
     "github_code_search": 3,
     "shape_similarity": 3,
@@ -154,6 +156,7 @@ TOPIC_STOPWORDS = {
     "using",
     "with",
 }
+AUTHOR_STOPWORDS = {"jr", "sr", "ii", "iii", "iv", "dr", "prof"}
 
 
 @dataclass(frozen=True)
@@ -802,6 +805,50 @@ def build_temporal_topic_queries(
     return dedupe_preserving_order(phrases)[:4]
 
 
+def extract_author_surnames(authors: list[str]) -> list[str]:
+    surnames: list[str] = []
+    for author in authors:
+        parts = [part.strip(" ,.") for part in author.split() if part.strip(" ,.")]
+        if not parts:
+            continue
+        surname = parts[-1].lower()
+        if len(surname) < 2 or surname in AUTHOR_STOPWORDS:
+            continue
+        surnames.append(surname)
+    return dedupe_preserving_order(surnames)[:4]
+
+
+def build_citation_graph_queries(paper_document: PaperDocument, request: AnalysisRequest) -> list[str]:
+    queries: list[str] = []
+    arxiv_id = extract_arxiv_id(request.paper_source)
+    if arxiv_id is not None:
+        queries.append(f"arxiv {arxiv_id}")
+        queries.append(arxiv_id)
+    title_tokens = [
+        token
+        for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9+-]{2,}", paper_document.title)
+        if token.lower() not in TOPIC_STOPWORDS
+    ]
+    if len(title_tokens) >= 2:
+        queries.append(" ".join(title_tokens[:5]))
+    return dedupe_preserving_order(queries)[:4]
+
+
+def build_author_graph_queries(
+    paper_document: PaperDocument,
+    contributions: list[PaperContribution],
+) -> list[str]:
+    surnames = extract_author_surnames(paper_document.authors)
+    if not surnames:
+        return []
+    topic_queries = build_temporal_topic_queries(paper_document, contributions) or [paper_document.title]
+    queries: list[str] = []
+    for surname in surnames:
+        for topic_query in topic_queries[:2]:
+            queries.append(f"{surname} {topic_query}")
+    return dedupe_preserving_order(queries)[:4]
+
+
 def extract_dependency_names(raw_value: str) -> list[str]:
     dependency_names: list[str] = []
     for line in raw_value.splitlines():
@@ -1414,6 +1461,148 @@ def build_temporal_topic_candidates(
     return dedupe_repo_candidates(candidates), warnings
 
 
+def build_citation_graph_candidates(
+    request: AnalysisRequest,
+    paper_document: PaperDocument,
+    settings: Settings | None,
+    client: httpx.Client | None = None,
+) -> tuple[list[BaseRepoCandidate], list[str]]:
+    if settings is None:
+        return [], []
+
+    queries = build_citation_graph_queries(paper_document, request)
+    if not queries:
+        return [], []
+
+    close_client = client is None
+    http_client = client or httpx.Client(timeout=settings.github_timeout_seconds)
+    headers = {"Accept": "application/vnd.github+json"}
+    if settings.github_token:
+        headers["Authorization"] = f"Bearer {settings.github_token}"
+
+    repo_evidence: dict[str, list[str]] = {}
+    warnings: list[str] = []
+    try:
+        endpoint = f"{settings.github_api_base_url.rstrip('/')}/search/repositories"
+        for query in queries:
+            try:
+                response = http_client.get(
+                    endpoint,
+                    headers=headers,
+                    params={"q": f'"{query}" in:readme,description language:Python', "per_page": 5},
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                warnings.append(f"Repo tracer skipped citation graph query {query}: {exc}")
+                continue
+
+            for item in payload.get("items", []):
+                html_url = item.get("html_url")
+                if not isinstance(html_url, str):
+                    continue
+                try:
+                    repo_url = normalize_repo_url(html_url)
+                except ValueError:
+                    continue
+                if repo_url == request.repo_url:
+                    continue
+                repo_evidence.setdefault(repo_url, []).append(query)
+    finally:
+        if close_client:
+            http_client.close()
+
+    candidates = [
+        BaseRepoCandidate(
+            repo_url=repo_url,
+            strategy="citation_graph",
+            confidence=round(min(0.66 + 0.05 * len(matches), 0.9), 2),
+            evidence=(
+                "GitHub repository search matched paper citation signals "
+                f"{', '.join(list(dict.fromkeys(matches))[:3])}."
+            ),
+        )
+        for repo_url, matches in repo_evidence.items()
+    ]
+    return dedupe_repo_candidates(candidates), warnings
+
+
+def build_author_graph_candidates(
+    request: AnalysisRequest,
+    paper_document: PaperDocument,
+    contributions: list[PaperContribution],
+    settings: Settings | None,
+    client: httpx.Client | None = None,
+) -> tuple[list[BaseRepoCandidate], list[str]]:
+    if settings is None:
+        return [], []
+
+    queries = build_author_graph_queries(paper_document, contributions)
+    if not queries:
+        return [], []
+
+    surnames = set(extract_author_surnames(paper_document.authors))
+    close_client = client is None
+    http_client = client or httpx.Client(timeout=settings.github_timeout_seconds)
+    headers = {"Accept": "application/vnd.github+json"}
+    if settings.github_token:
+        headers["Authorization"] = f"Bearer {settings.github_token}"
+
+    repo_matches: dict[str, tuple[str, str | None]] = {}
+    warnings: list[str] = []
+    try:
+        endpoint = f"{settings.github_api_base_url.rstrip('/')}/search/repositories"
+        for query in queries:
+            try:
+                response = http_client.get(
+                    endpoint,
+                    headers=headers,
+                    params={"q": f'"{query}" in:readme,description language:Python', "per_page": 5},
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                warnings.append(f"Repo tracer skipped author graph query {query}: {exc}")
+                continue
+
+            for item in payload.get("items", []):
+                html_url = item.get("html_url")
+                if not isinstance(html_url, str):
+                    continue
+                try:
+                    repo_url = normalize_repo_url(html_url)
+                except ValueError:
+                    continue
+                if repo_url == request.repo_url:
+                    continue
+                owner_login = str((item.get("owner") or {}).get("login") or "").lower()
+                description = str(item.get("description") or "")
+                if surnames and not any(
+                    surname in owner_login or surname in description.lower() for surname in surnames
+                ):
+                    continue
+                repo_matches[repo_url] = (query, owner_login or None)
+    finally:
+        if close_client:
+            http_client.close()
+
+    candidates = [
+        BaseRepoCandidate(
+            repo_url=repo_url,
+            strategy="author_graph",
+            confidence=0.72,
+            evidence=(
+                "GitHub repository search linked paper-author surnames "
+                f"to repo owner {owner_login} via query '{query}'."
+                if owner_login
+                else f"GitHub repository search matched paper-author surnames via query '{query}'."
+            ),
+        )
+        for repo_url, (query, owner_login) in repo_matches.items()
+    ]
+    return dedupe_repo_candidates(candidates), warnings
+
+
 def changed_file_link_reasons(left: ChangedFile, right: ChangedFile) -> list[str]:
     if left.change_type != right.change_type:
         return []
@@ -1599,6 +1788,23 @@ class StrategyDrivenRepoTracer:
         )
         warnings.extend(dependency_warnings)
         candidates.extend(dependency_candidates)
+        citation_graph_candidates, citation_graph_warnings = build_citation_graph_candidates(
+            request,
+            paper_document,
+            self.settings,
+            client=self.github_client,
+        )
+        warnings.extend(citation_graph_warnings)
+        candidates.extend(citation_graph_candidates)
+        author_graph_candidates, author_graph_warnings = build_author_graph_candidates(
+            request,
+            paper_document,
+            contributions,
+            self.settings,
+            client=self.github_client,
+        )
+        warnings.extend(author_graph_warnings)
+        candidates.extend(author_graph_candidates)
         github_code_search_candidates, github_code_search_warnings = build_github_code_search_candidates(
             request,
             self.repo_mirror,
@@ -1631,6 +1837,8 @@ class StrategyDrivenRepoTracer:
                 *[candidate.repo_url for candidate in framework_signature_candidates],
                 *[candidate.repo_url for candidate in metadata_url_candidates],
                 *[candidate.repo_url for candidate in dependency_candidates],
+                *[candidate.repo_url for candidate in citation_graph_candidates],
+                *[candidate.repo_url for candidate in author_graph_candidates],
                 *[candidate.repo_url for candidate in github_code_search_candidates],
                 *[candidate.repo_url for candidate in temporal_topic_candidates],
                 *[candidate.repo_url for candidate in code_reference_candidates],

@@ -108,6 +108,8 @@ def test_arxiv_paper_source_fetcher_parses_atom_feed() -> None:
         <feed xmlns="http://www.w3.org/2005/Atom">
           <entry>
             <title>LoRA: Low-Rank Adaptation of Large Language Models</title>
+            <author><name>Edward J. Hu</name></author>
+            <author><name>Yelong Shen</name></author>
             <summary>We reduce adaptation cost with low-rank updates.</summary>
           </entry>
         </feed>
@@ -131,6 +133,7 @@ def test_arxiv_paper_source_fetcher_parses_atom_feed() -> None:
     assert output.mode == ProcessorMode.REMOTE_FETCH
     assert output.paper_document.source_kind == PaperSourceKind.ARXIV
     assert output.paper_document.title.startswith("LoRA")
+    assert output.paper_document.authors == ["Edward J. Hu", "Yelong Shen"]
     assert "low-rank" in output.paper_document.text.lower()
 
 
@@ -141,6 +144,7 @@ def test_arxiv_paper_source_fetcher_prefers_latex_source_archive() -> None:
         <feed xmlns="http://www.w3.org/2005/Atom">
           <entry>
             <title>Fallback LoRA Title</title>
+            <author><name>Edward J. Hu</name></author>
             <summary>Fallback abstract from Atom metadata.</summary>
           </entry>
         </feed>
@@ -153,6 +157,7 @@ def test_arxiv_paper_source_fetcher_prefers_latex_source_archive() -> None:
                 """\
                 \\documentclass{article}
                 \\title{LoRA from Source Archive}
+                \\author{Edward J. Hu and Yelong Shen}
                 \\begin{document}
                 \\maketitle
                 \\begin{abstract}
@@ -189,6 +194,7 @@ def test_arxiv_paper_source_fetcher_prefers_latex_source_archive() -> None:
     assert output.mode == ProcessorMode.REMOTE_FETCH
     assert output.warnings == []
     assert output.paper_document.title == "LoRA from Source Archive"
+    assert output.paper_document.authors == ["Edward J. Hu", "Yelong Shen"]
     assert output.paper_document.abstract.startswith("We introduce source-backed low-rank adaptation")
     assert [section.heading for section in output.paper_document.sections] == ["Introduction", "Method"]
     assert "rank decomposition matrices" in output.paper_document.text.lower()

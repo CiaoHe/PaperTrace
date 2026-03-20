@@ -1067,3 +1067,125 @@ def test_repo_tracer_extracts_temporal_topic_candidates(
     assert trace_output.selected_base_repo.strategy == "temporal_topic_search"
     assert trace_output.selected_base_repo.repo_url == "https://github.com/example/upstream-routing"
     assert "predates the paper" in trace_output.selected_base_repo.evidence
+
+
+def test_repo_tracer_extracts_citation_graph_candidates(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    target_repo = tmp_path / "target-citation-search"
+    init_git_repo(
+        target_repo,
+        {
+            "src/model.py": "def train_sparse_router():\n    return 'ok'\n",
+        },
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            return httpx.Response(200, json={"items": []})
+        if request.url.path == "/search/repositories":
+            query = request.url.params.get("q", "")
+            if "2106.09685" in query:
+                return httpx.Response(
+                    200,
+                    json={"items": [{"html_url": "https://github.com/example/cited-paper-impl"}]},
+                )
+            return httpx.Response(200, json={"items": []})
+        return httpx.Response(404)
+
+    tracer = StrategyDrivenRepoTracer(
+        repo_metadata_provider=EmptyRepoMetadataProvider(),
+        repo_mirror=StaticRepoMirror({"https://github.com/example/target-citation-search": target_repo}),
+        settings=repo_settings.model_copy(update={"github_api_base_url": "https://example.test"}),
+        github_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    trace_output = tracer.trace(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2106.09685",
+            repo_url="https://github.com/example/target-citation-search",
+        ),
+        PaperDocument(
+            source_kind=PaperSourceKind.ARXIV,
+            source_ref="https://arxiv.org/abs/2106.09685",
+            title="LoRA: Low-Rank Adaptation of Large Language Models",
+            authors=["Edward J. Hu"],
+            abstract="We introduce low-rank adaptation.",
+            sections=[],
+            text="No explicit upstream mention.",
+        ),
+        [],
+    )
+
+    assert trace_output.selected_base_repo.strategy == "citation_graph"
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/example/cited-paper-impl"
+    assert "citation signals" in trace_output.selected_base_repo.evidence
+
+
+def test_repo_tracer_extracts_author_graph_candidates(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    target_repo = tmp_path / "target-author-search"
+    init_git_repo(
+        target_repo,
+        {
+            "src/model.py": "def train_sparse_router():\n    return 'ok'\n",
+        },
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            return httpx.Response(200, json={"items": []})
+        if request.url.path == "/search/repositories":
+            query = request.url.params.get("q", "")
+            if "hu sparse routing distillation" in query.lower():
+                return httpx.Response(
+                    200,
+                    json={
+                        "items": [
+                            {
+                                "html_url": "https://github.com/edwardhu/sparse-routing",
+                                "owner": {"login": "edwardhu"},
+                                "description": "Sparse routing experiments",
+                            }
+                        ]
+                    },
+                )
+            return httpx.Response(200, json={"items": []})
+        return httpx.Response(404)
+
+    tracer = StrategyDrivenRepoTracer(
+        repo_metadata_provider=EmptyRepoMetadataProvider(),
+        repo_mirror=StaticRepoMirror({"https://github.com/example/target-author-search": target_repo}),
+        settings=repo_settings.model_copy(update={"github_api_base_url": "https://example.test"}),
+        github_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    trace_output = tracer.trace(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2401.12345",
+            repo_url="https://github.com/example/target-author-search",
+        ),
+        PaperDocument(
+            source_kind=PaperSourceKind.ARXIV,
+            source_ref="https://arxiv.org/abs/2401.12345",
+            title="Sparse Routing Distillation",
+            authors=["Edward J. Hu", "Yelong Shen"],
+            abstract="We introduce a sparse routing encoder for long-context retrieval.",
+            sections=[],
+            text="No explicit upstream mention.",
+        ),
+        [
+            PaperContribution(
+                id="C1",
+                title="Sparse routing encoder",
+                section="Method",
+                keywords=["routing", "encoder"],
+                impl_hints=["Introduce routing slots"],
+            )
+        ],
+    )
+
+    assert trace_output.selected_base_repo.strategy == "author_graph"
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/edwardhu/sparse-routing"
+    assert "repo owner edwardhu" in trace_output.selected_base_repo.evidence

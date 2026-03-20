@@ -14,7 +14,7 @@
 
 - Verified locally during this review:
   - `make lint` passed
-  - `make test` passed with `77 passed, 6 deselected`
+  - `make test` passed with `79 passed, 6 deselected`
   - `make e2e` passed with `3 passed`
 - Previously verified in the current implementation cycle:
   - `make lint` passed
@@ -106,6 +106,8 @@
   - Dependency archaeology now scans dependency files and submodule config for ancestry hints.
   - Fossil detection now inspects first-commit evidence.
   - GitHub code search for unique symbols is now implemented as an optional remote strategy.
+  - Citation-graph search now exists as an optional remote strategy through GitHub repository search over arXiv IDs and paper-title citation signals.
+  - Author-graph search now exists as an optional remote strategy through GitHub repository search over paper-author surnames plus paper-topic phrases.
   - Temporal-topic GitHub repository search now exists as an optional remote strategy that uses paper-topic phrases and paper-time priors.
   - Directory and dependency shape similarity now exists as a distinct strategy.
   - Optional LLM ancestry reasoning now acts as a late-stage cascade ring that can propose additional upstream candidates from paper context, repo metadata, and current heuristic candidates.
@@ -116,7 +118,6 @@
   - [llm.py](/Users/kakusou/work/code/project/PaperTrace/packages/analysis-core/src/papertrace_core/llm.py)
 - Remaining:
   - Strategy quality still depends on a small built-in known-upstream alias map.
-  - Author graph and citation graph search are not implemented.
   - Initial commit ancestry analysis is still lightweight rather than a fuller ancestry diff.
   - The current fingerprint approach is still a lightweight overlap heuristic, not the fuller fingerprint library described in `AGENTS.md`.
   - The cascade now reaches an LLM reasoning ring, but still lacks richer graph-based search rings before that final inference step.
@@ -314,8 +315,8 @@
 - Current alignment: `confirmed with caveat`
 - Notes:
   - The main path is no longer just golden-fixture candidate replay.
-  - The tracer now includes framework-signature, dependency-archaeology, fossil, temporal-topic, shape-similarity, code-reference, and fingerprint layers.
-  - It is still not a mature cascade-search engine because author/citation graph strategies and broader registries are missing.
+  - The tracer now includes framework-signature, dependency-archaeology, fossil, citation-graph, author-graph, temporal-topic, shape-similarity, code-reference, and fingerprint layers.
+  - It is still not a mature cascade-search engine because deeper graph ranking and broader registries are still missing.
 
 ### 4. Live Diff As The Default Analysis Path
 

@@ -36,6 +36,7 @@ PDF_HEADING_RE = re.compile(
 )
 LATEX_COMMENT_RE = re.compile(r"(?<!\\)%.*$")
 LATEX_TITLE_RE = re.compile(r"\\title\{(?P<value>.*?)\}", flags=re.DOTALL)
+LATEX_AUTHOR_RE = re.compile(r"\\author\{(?P<value>.*?)\}", flags=re.DOTALL)
 LATEX_ABSTRACT_RE = re.compile(
     r"\\begin\{abstract\}(?P<value>.*?)\\end\{abstract\}",
     flags=re.DOTALL,
@@ -107,6 +108,15 @@ def extract_latex_abstract(source_text: str) -> str | None:
     return abstract or None
 
 
+def extract_latex_authors(source_text: str) -> list[str]:
+    match = LATEX_AUTHOR_RE.search(source_text)
+    if match is None:
+        return []
+    flattened = flatten_latex_text(match.group("value"))
+    candidates = re.split(r"\s{2,}|,|\band\b", flattened, flags=re.IGNORECASE)
+    return [candidate.strip() for candidate in candidates if len(candidate.strip()) >= 3][:10]
+
+
 def extract_latex_sections(source_text: str) -> list[PaperSection]:
     sections: list[PaperSection] = []
     for match in LATEX_SECTION_RE.finditer(source_text):
@@ -123,8 +133,10 @@ def build_latex_document(
     source_ref: str,
     metadata_title: str,
     metadata_abstract: str,
+    metadata_authors: list[str] | None = None,
 ) -> PaperDocument:
     title = extract_latex_title(source_text) or metadata_title
+    authors = extract_latex_authors(source_text) or list(metadata_authors or [])
     abstract = extract_latex_abstract(source_text) or metadata_abstract
     sections = extract_latex_sections(source_text)
     section_text = "\n\n".join(f"{section.heading}\n{section.text}" for section in sections)
@@ -133,6 +145,7 @@ def build_latex_document(
         source_kind=PaperSourceKind.ARXIV,
         source_ref=source_ref,
         title=title,
+        authors=authors,
         abstract=abstract,
         sections=sections or ([PaperSection(heading="Abstract", text=abstract)] if abstract else []),
         text=text,
@@ -287,6 +300,7 @@ class ArxivPaperSourceFetcher:
         arxiv_id: str,
         metadata_title: str,
         metadata_abstract: str,
+        metadata_authors: list[str],
     ) -> tuple[PaperDocument | None, str | None]:
         source_endpoint = f"{self.settings.arxiv_api_base_url.rstrip('/')}/e-print/{arxiv_id}"
         try:
@@ -308,6 +322,7 @@ class ArxivPaperSourceFetcher:
                 source_ref=f"https://arxiv.org/abs/{arxiv_id}",
                 metadata_title=metadata_title,
                 metadata_abstract=metadata_abstract,
+                metadata_authors=metadata_authors,
             ),
             None,
         )
@@ -341,6 +356,11 @@ class ArxivPaperSourceFetcher:
 
             title = (entry.findtext("atom:title", default="", namespaces=ATOM_NS) or "").strip()
             abstract = (entry.findtext("atom:summary", default="", namespaces=ATOM_NS) or "").strip()
+            authors = [
+                (author.text or "").strip()
+                for author in entry.findall("atom:author/atom:name", ATOM_NS)
+                if (author.text or "").strip()
+            ]
             if not title or not abstract:
                 raise PaperFetchError(f"Incomplete arXiv metadata returned for {arxiv_id}")
             if progress is not None:
@@ -350,6 +370,7 @@ class ArxivPaperSourceFetcher:
                 arxiv_id=arxiv_id,
                 metadata_title=title,
                 metadata_abstract=abstract,
+                metadata_authors=authors,
             )
             if source_warning is not None:
                 warnings.append(source_warning)
@@ -375,6 +396,7 @@ class ArxivPaperSourceFetcher:
                 source_kind=PaperSourceKind.ARXIV,
                 source_ref=f"https://arxiv.org/abs/{arxiv_id}",
                 title=title,
+                authors=authors,
                 abstract=abstract,
                 sections=[PaperSection(heading="Abstract", text=abstract)],
                 text=build_arxiv_text(title, abstract),

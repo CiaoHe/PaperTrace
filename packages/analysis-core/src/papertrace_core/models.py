@@ -70,6 +70,7 @@ class PaperDocument(BaseModel):
     source_kind: PaperSourceKind
     source_ref: str
     title: str
+    authors: list[str] = Field(default_factory=list)
     abstract: str = ""
     sections: list[PaperSection] = Field(default_factory=list)
     text: str
