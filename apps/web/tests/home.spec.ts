@@ -63,7 +63,10 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await expect(page.getByText("Paper fetch mode")).toBeVisible();
   await expect(page.getByText("strategy chain")).toBeVisible();
   await expect(page.getByText("Evidence review board")).toBeVisible();
-  await expect(page.getByText("Lineage graph")).toBeVisible();
+  await expect(page.getByText("Lineage explorer")).toBeVisible();
+  await page.getByRole("button", { name: "Signal rings" }).click();
+  await expect(page.getByText("Review sequence")).toBeVisible();
+  await page.getByRole("button", { name: "Hypothesis paths" }).click();
   await expect(page.getByText("Annotation panel")).toBeVisible();
   await expect(page.getByText("Contribution mappings")).toBeVisible();
   await expect(page.getByText("D1 → C1").first()).toBeVisible();
