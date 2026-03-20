@@ -237,11 +237,40 @@ select {
   border: 1px solid #f1dc8b;
 }
 
+.result-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: start;
+}
+
+.hero-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(92px, 1fr));
+  gap: 10px;
+  min-width: min(340px, 100%);
+}
+
+.hero-metric {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(24, 33, 47, 0.04);
+  border: 1px solid rgba(24, 33, 47, 0.08);
+}
+
+.result-band {
+  display: grid;
+  grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
 .evidence-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
-  margin-bottom: 14px;
 }
 
 .evidence-stat {
@@ -265,6 +294,19 @@ select {
   border-radius: 18px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(233, 243, 246, 0.86));
   border: 1px solid rgba(24, 33, 47, 0.08);
+}
+
+.trace-card.active,
+.signal-chip.active,
+.lineage-card.selected {
+  border-color: rgba(15, 118, 110, 0.32);
+  box-shadow: 0 12px 30px rgba(15, 118, 110, 0.12);
+}
+
+.trace-button {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
 }
 
 .trace-head {
@@ -309,12 +351,107 @@ select {
   border: 1px solid rgba(24, 33, 47, 0.08);
 }
 
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: start;
+}
+
+.section-head h3,
+.section-head p {
+  margin: 0;
+}
+
+.workbench-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 280px) minmax(0, 1fr) minmax(0, 320px);
+  gap: 14px;
+  align-items: start;
+}
+
+.workbench-column,
+.workbench-main {
+  display: grid;
+  gap: 14px;
+}
+
+.workbench-card {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.74);
+  border: 1px solid rgba(24, 33, 47, 0.08);
+}
+
+.workbench-card h4,
+.workbench-card p {
+  margin: 0;
+}
+
+.signal-list,
+.lineage-list {
+  display: grid;
+  gap: 10px;
+}
+
+.signal-chip {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(24, 33, 47, 0.1);
+  background: white;
+  cursor: pointer;
+}
+
+.signal-chip strong,
+.signal-chip span {
+  display: block;
+}
+
+.lineage-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(24, 33, 47, 0.1);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 243, 232, 0.84));
+}
+
+.lineage-card p,
+.lineage-card strong {
+  margin: 0;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 @media (max-width: 900px) {
   .grid-main {
     grid-template-columns: 1fr;
   }
 
+  .result-hero,
+  .section-head,
+  .result-band {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .hero-metrics,
   .evidence-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .workbench-grid,
+  .detail-grid {
+    grid-template-columns: 1fr;
   }
 }

@@ -59,15 +59,15 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
 
   await expect(page.getByText("Selected base repo")).toBeVisible();
   await expect(
-    page.getByRole("strong").filter({ hasText: "https://github.com/huggingface/transformers" }),
+    page.getByText("https://github.com/huggingface/transformers").first(),
   ).toBeVisible();
   await expect(page.getByText("Runtime provenance")).toBeVisible();
   await expect(page.getByText("Paper fetch mode")).toBeVisible();
   await expect(page.getByText("strategy chain")).toBeVisible();
   await expect(page.getByText("Evidence review board")).toBeVisible();
   await expect(page.getByText("Contribution mappings")).toBeVisible();
-  await expect(page.getByText("D1 → C1")).toBeVisible();
-  await expect(page.getByText(/coverage 1\.00/i).first()).toBeVisible();
+  await expect(page.getByText("D1 → C1").first()).toBeVisible();
+  await expect(page.getByText("Learning entry point")).toBeVisible();
   await expect(page.getByRole("button", { name: "Open job" }).first()).toBeVisible();
 });
 

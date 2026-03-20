@@ -3,8 +3,17 @@
 import type { AnalysisResult, GoldenCaseExample, HealthResponse, JobStatusResponse } from "@papertrace/contracts";
 import { useEffect, useId, useState } from "react";
 
+import { AnalysisResultsWorkbench } from "@/components/analysis-results-workbench";
 import type { StructuredPaperSourceKind } from "@/lib/api";
-import { createAnalysis, getAnalysis, getAnalysisResult, getExamples, getHealth, getJobs } from "@/lib/api";
+import {
+  API_BASE_URL,
+  createAnalysis,
+  getAnalysis,
+  getAnalysisResult,
+  getExamples,
+  getHealth,
+  getJobs,
+} from "@/lib/api";
 
 const DEFAULT_PAPER = "https://arxiv.org/abs/2106.09685 LoRA";
 const DEFAULT_REPO = "https://github.com/microsoft/LoRA";
@@ -16,29 +25,6 @@ function statusClass(status: JobStatusResponse["status"]): string {
 
 function formatEnumLabel(value: string): string {
   return value.replaceAll("_", " ");
-}
-
-function readOptionalStringArray(
-  value: AnalysisResult,
-  key: "unmatched_contribution_ids" | "unmatched_diff_cluster_ids",
-): string[] {
-  if (!(key in value)) {
-    return [];
-  }
-  const nextValue = value[key];
-  return Array.isArray(nextValue) ? nextValue : [];
-}
-
-function buildCoverageBuckets(result: AnalysisResult | null): Record<string, number> {
-  const buckets: Record<string, number> = { FULL: 0, PARTIAL: 0, APPROXIMATED: 0, MISSING: 0 };
-  if (!result) {
-    return buckets;
-  }
-  for (const mapping of result.mappings) {
-    const coverageType = mapping.coverage_type ?? "PARTIAL";
-    buckets[coverageType] = (buckets[coverageType] ?? 0) + 1;
-  }
-  return buckets;
 }
 
 export function AnalysisForm() {
@@ -57,11 +43,6 @@ export function AnalysisForm() {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const unmatchedContributionIds = result ? readOptionalStringArray(result, "unmatched_contribution_ids") : [];
-  const unmatchedDiffClusterIds = result ? readOptionalStringArray(result, "unmatched_diff_cluster_ids") : [];
-  const coverageBuckets = buildCoverageBuckets(result);
-  const contributionById = new Map(result?.contributions.map((contribution) => [contribution.id, contribution]) ?? []);
-  const clusterById = new Map(result?.diff_clusters.map((cluster) => [cluster.id, cluster]) ?? []);
 
   useEffect(() => {
     void (async () => {
@@ -323,6 +304,10 @@ export function AnalysisForm() {
                   </p>
                 </div>
                 <div className="item">
+                  <h4>Observed API endpoint</h4>
+                  <p>{API_BASE_URL}</p>
+                </div>
+                <div className="item">
                   <h4>Paper source kinds</h4>
                   <p>{health.supported_paper_source_kinds.map(formatEnumLabel).join(" · ")}</p>
                 </div>
@@ -357,276 +342,7 @@ export function AnalysisForm() {
           </div>
         </div>
 
-        {result ? (
-          <div className="panel">
-            <div className="panel-inner stack">
-              <div>
-                <h3>Analysis summary</h3>
-                <p className="muted">{result.summary}</p>
-              </div>
-
-              <div className="kpi">
-                <small>Selected base repo</small>
-                <strong>{result.selected_base_repo.repo_url}</strong>
-                <span className="muted">
-                  {result.selected_base_repo.strategy} • confidence {result.selected_base_repo.confidence.toFixed(2)}
-                </span>
-              </div>
-
-              <div>
-                <h3>Evidence review board</h3>
-                <div className="evidence-grid">
-                  {Object.entries(coverageBuckets).map(([label, count]) => (
-                    <div className="evidence-stat" key={label}>
-                      <small>{label}</small>
-                      <strong>{count}</strong>
-                    </div>
-                  ))}
-                </div>
-                <div className="review-lane">
-                  {result.mappings.map((mapping) => {
-                    const contribution = contributionById.get(mapping.contribution_id);
-                    const cluster = clusterById.get(mapping.diff_cluster_id);
-                    const readingOrder = mapping.reading_order ?? [];
-                    return (
-                      <article className="trace-card" key={`${mapping.diff_cluster_id}-${mapping.contribution_id}`}>
-                        <div className="trace-head">
-                          <div>
-                            <small>{mapping.coverage_type}</small>
-                            <h4>
-                              {contribution?.title ?? mapping.contribution_id} ↔{" "}
-                              {cluster?.label ?? mapping.diff_cluster_id}
-                            </h4>
-                          </div>
-                          <strong>{mapping.implementation_coverage.toFixed(2)}</strong>
-                        </div>
-                        <div className="coverage-meter" aria-hidden="true">
-                          <span style={{ width: `${Math.round(mapping.implementation_coverage * 100)}%` }} />
-                        </div>
-                        <p>{mapping.evidence}</p>
-                        {mapping.learning_entry_point ? <p>entry point: {mapping.learning_entry_point}</p> : null}
-                        {readingOrder.length > 0 ? (
-                          <div className="pill-row">
-                            {readingOrder.map((file) => (
-                              <code className="pill" key={file}>
-                                {file}
-                              </code>
-                            ))}
-                          </div>
-                        ) : null}
-                      </article>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <h3>Runtime provenance</h3>
-                <div className="list">
-                  <div className="item">
-                    <h4>Paper fetch mode</h4>
-                    <p>{formatEnumLabel(result.metadata.paper_fetch_mode)}</p>
-                  </div>
-                  <div className="item">
-                    <h4>Paper source kind</h4>
-                    <p>{formatEnumLabel(result.metadata.paper_source_kind)}</p>
-                  </div>
-                  <div className="item">
-                    <h4>Parser mode</h4>
-                    <p>{formatEnumLabel(result.metadata.parser_mode)}</p>
-                  </div>
-                  <div className="item">
-                    <h4>Repo tracer mode</h4>
-                    <p>{formatEnumLabel(result.metadata.repo_tracer_mode)}</p>
-                  </div>
-                  <div className="item">
-                    <h4>Diff analyzer mode</h4>
-                    <p>{formatEnumLabel(result.metadata.diff_analyzer_mode)}</p>
-                  </div>
-                  <div className="item">
-                    <h4>Contribution mapper mode</h4>
-                    <p>{formatEnumLabel(result.metadata.contribution_mapper_mode)}</p>
-                  </div>
-                  <div className="item">
-                    <h4>Selected repo strategy</h4>
-                    <p>{formatEnumLabel(result.metadata.selected_repo_strategy)}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <h3>Base repo candidates</h3>
-                <div className="list">
-                  {result.base_repo_candidates.map((candidate) => (
-                    <div className="item" key={`${candidate.repo_url}-${candidate.strategy}`}>
-                      <h4>{candidate.repo_url}</h4>
-                      <p>
-                        {candidate.strategy} · confidence {candidate.confidence.toFixed(2)}
-                      </p>
-                      <p>{candidate.evidence}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <h3>Contributions</h3>
-                <div className="list">
-                  {result.contributions.map((contribution) => (
-                    <div className="item" key={contribution.id}>
-                      {(() => {
-                        const evidenceRefs = contribution.evidence_refs ?? [];
-                        return (
-                          <>
-                            <h4>
-                              {contribution.id} · {contribution.title}
-                            </h4>
-                            <p>{contribution.section}</p>
-                            {contribution.problem_solved ? <p>problem: {contribution.problem_solved}</p> : null}
-                            {contribution.baseline_difference ? (
-                              <p>difference: {contribution.baseline_difference}</p>
-                            ) : null}
-                            {evidenceRefs.length > 0 ? <p>refs: {evidenceRefs.join(" · ")}</p> : null}
-                            {typeof contribution.implementation_complexity === "number" ? (
-                              <p>implementation complexity: {contribution.implementation_complexity}/5</p>
-                            ) : null}
-                            <p>{contribution.impl_hints.join(" ")}</p>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <h3>Diff clusters</h3>
-                <div className="list">
-                  {result.diff_clusters.map((cluster) => (
-                    <div className="item" key={cluster.id}>
-                      {(() => {
-                        const semanticTags = cluster.semantic_tags ?? [];
-                        const relatedClusterIds = cluster.related_cluster_ids ?? [];
-                        return (
-                          <>
-                            <h4>
-                              {cluster.id} · {cluster.label}
-                            </h4>
-                            <p>
-                              {cluster.change_type} · {cluster.summary}
-                            </p>
-                            {semanticTags.length > 0 ? <p>semantic tags: {semanticTags.join(" · ")}</p> : null}
-                            {relatedClusterIds.length > 0 ? (
-                              <p>related clusters: {relatedClusterIds.join(" · ")}</p>
-                            ) : null}
-                            <p>
-                              {cluster.files.map((file) => (
-                                <code key={file} style={{ display: "block" }}>
-                                  {file}
-                                </code>
-                              ))}
-                            </p>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <h3>Contribution mappings</h3>
-                {result.mappings.length > 0 ? (
-                  <div className="list">
-                    {result.mappings.map((mapping) => (
-                      <div className="item" key={`${mapping.diff_cluster_id}-${mapping.contribution_id}`}>
-                        {(() => {
-                          const readingOrder = mapping.reading_order ?? [];
-                          const missingAspects = mapping.missing_aspects ?? [];
-                          const engineeringDivergences = mapping.engineering_divergences ?? [];
-                          return (
-                            <>
-                              <h4>
-                                {mapping.diff_cluster_id} → {mapping.contribution_id}
-                              </h4>
-                              <p>
-                                confidence {mapping.confidence.toFixed(2)} · {mapping.completeness}
-                              </p>
-                              <p>
-                                coverage {mapping.implementation_coverage.toFixed(2)} · {mapping.coverage_type}
-                              </p>
-                              {mapping.learning_entry_point ? <p>entry point: {mapping.learning_entry_point}</p> : null}
-                              {readingOrder.length > 0 ? <p>reading order: {readingOrder.join(" → ")}</p> : null}
-                              {missingAspects.length > 0 ? <p>missing aspects: {missingAspects.join(" · ")}</p> : null}
-                              {engineeringDivergences.length > 0 ? (
-                                <p>engineering divergences: {engineeringDivergences.join(" · ")}</p>
-                              ) : null}
-                              <p>{mapping.evidence}</p>
-                            </>
-                          );
-                        })()}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="muted">No confident mappings yet for this run.</p>
-                )}
-              </div>
-
-              {unmatchedContributionIds.length > 0 ? (
-                <div>
-                  <h3>Unmatched contributions</h3>
-                  <div className="list">
-                    {unmatchedContributionIds.map((contributionId: string) => (
-                      <div className="warning" key={contributionId}>
-                        {contributionId}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {unmatchedDiffClusterIds.length > 0 ? (
-                <div>
-                  <h3>Unmatched diff clusters</h3>
-                  <div className="list">
-                    {unmatchedDiffClusterIds.map((clusterId: string) => (
-                      <div className="warning" key={clusterId}>
-                        {clusterId}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {result.metadata.fallback_notes.length > 0 ? (
-                <div>
-                  <h3>Runtime fallback notes</h3>
-                  <div className="list">
-                    {result.metadata.fallback_notes.map((note) => (
-                      <div className="warning" key={note}>
-                        {note}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              {result.warnings.length > 0 ? (
-                <div>
-                  <h3>Warnings</h3>
-                  <div className="list">
-                    {result.warnings.map((warning) => (
-                      <div className="warning" key={warning}>
-                        {warning}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
+        {result ? <AnalysisResultsWorkbench result={result} /> : null}
       </section>
     </div>
   );
