@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 import tomllib
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,6 +67,7 @@ STRATEGY_PRIORITY: dict[str, int] = {
     "readme_declaration": 4,
     "framework_signature": 4,
     "fossil_evidence": 4,
+    "metadata_url": 4,
     "paper_mention": 3,
     "dependency_archaeology": 3,
     "github_code_search": 3,
@@ -96,7 +98,9 @@ IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 SYMBOL_RE = re.compile(r"\b(?:class|def)\s+([A-Za-z_][A-Za-z0-9_]*)")
 IMPORT_RE = re.compile(r"\b(?:from|import)\s+([A-Za-z_][A-Za-z0-9_\.]*)")
 FINGERPRINT_SCORE_THRESHOLD = 0.12
-DIRECT_DEPENDENCY_RE = re.compile(r"(?:git\+)?(https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?)")
+DIRECT_DEPENDENCY_RE = re.compile(
+    r"(?:git\+)?(https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:\.git)?(?:@[A-Za-z0-9_.-]+)?"
+)
 LOCAL_IMPORT_RE = re.compile(r"\b(?:from|import)\s+([A-Za-z_][A-Za-z0-9_\.]*)")
 SEMANTIC_TAG_PATTERNS: dict[str, tuple[str, ...]] = {
     "attention": ("attention", "attn", "qkv"),
@@ -151,6 +155,7 @@ class ClusterState:
     stems: list[str]
     parent_dir: str
     rationales: list[str]
+    link_reasons: list[str]
 
 
 FRAMEWORK_SIGNATURES: dict[str, FrameworkSignature] = {
@@ -268,7 +273,10 @@ def load_repo_supporting_files(repo_root: Path) -> dict[str, str]:
         "requirements-dev.txt",
         "pyproject.toml",
         "setup.py",
+        "CITATION.cff",
+        "CITATION.bib",
         ".gitmodules",
+        ".git/config",
     )
     return {
         relative_path: content
@@ -437,6 +445,17 @@ def extract_signature_queries(snapshot: dict[str, str]) -> list[tuple[str, str]]
                 continue
             queries.append((f'"{name}" language:Python', f"{relative_path}:{name}"))
     return list(dict.fromkeys(queries))[:4]
+
+
+def metadata_url_confidence(relative_path: str) -> float:
+    lowered = relative_path.lower()
+    if lowered == ".git/config":
+        return 0.95
+    if lowered in {"citation.cff", "citation.bib"}:
+        return 0.9
+    if lowered in {"pyproject.toml", "setup.py"}:
+        return 0.86
+    return 0.82
 
 
 @dataclass(frozen=True)
@@ -864,6 +883,38 @@ def build_dependency_archaeology_candidates(
     return dedupe_repo_candidates(candidates), []
 
 
+def build_metadata_url_candidates(
+    request: AnalysisRequest,
+    repo_mirror: RepoMirror | None,
+) -> tuple[list[BaseRepoCandidate], list[str]]:
+    if repo_mirror is None:
+        return [], []
+
+    try:
+        target_root = repo_mirror.prepare(request.repo_url)
+    except (RepoAccessError, KeyError) as exc:
+        return [], [f"Repo tracer skipped metadata-url analysis: {exc}"]
+
+    supporting_files = load_repo_supporting_files(target_root)
+    metadata_files = {"pyproject.toml", "setup.py", "citation.cff", "citation.bib", ".git/config"}
+    candidates: list[BaseRepoCandidate] = []
+    for relative_path, content in supporting_files.items():
+        if relative_path.lower() not in metadata_files:
+            continue
+        for repo_url in extract_github_repo_urls(content):
+            if repo_url == request.repo_url:
+                continue
+            candidates.append(
+                BaseRepoCandidate(
+                    repo_url=repo_url,
+                    strategy="metadata_url",
+                    confidence=metadata_url_confidence(relative_path),
+                    evidence=f"Repository metadata file {relative_path} references {repo_url}.",
+                )
+            )
+    return dedupe_repo_candidates(candidates), []
+
+
 def build_fossil_candidates(
     request: AnalysisRequest,
     repo_mirror: RepoMirror | None,
@@ -1053,6 +1104,78 @@ def build_github_code_search_candidates(
     return dedupe_repo_candidates(candidates), warnings
 
 
+def changed_file_link_reasons(left: ChangedFile, right: ChangedFile) -> list[str]:
+    if left.change_type != right.change_type:
+        return []
+
+    reasons: list[str] = []
+    shared_tags = sorted(set(left.semantic_tags) & set(right.semantic_tags))
+    shared_imports = sorted(
+        (set(left.imports) & set(right.imports))
+        | (set(left.imports) & {right.stem})
+        | ({left.stem} & set(right.imports))
+    )
+    if shared_tags:
+        reasons.append(f"shared semantic tags: {', '.join(shared_tags[:3])}")
+    if shared_imports:
+        reasons.append(f"shared local symbols: {', '.join(shared_imports[:3])}")
+    if left.label == right.label:
+        reasons.append(f"shared contribution label: {left.label}")
+    if left.parent_dir == right.parent_dir and left.parent_dir:
+        reasons.append(f"shared parent dir: {left.parent_dir}")
+    return reasons
+
+
+def build_changed_file_components(changed_files: list[ChangedFile]) -> list[tuple[list[ChangedFile], list[str]]]:
+    adjacency: dict[int, set[int]] = {index: set() for index in range(len(changed_files))}
+    edge_reasons: dict[frozenset[int], list[str]] = {}
+    for left_index, left_file in enumerate(changed_files):
+        for right_index in range(left_index + 1, len(changed_files)):
+            right_file = changed_files[right_index]
+            reasons = changed_file_link_reasons(left_file, right_file)
+            if not reasons:
+                continue
+            adjacency[left_index].add(right_index)
+            adjacency[right_index].add(left_index)
+            edge_reasons[frozenset({left_index, right_index})] = reasons
+
+    components: list[tuple[list[ChangedFile], list[str]]] = []
+    visited: set[int] = set()
+    for start_index in range(len(changed_files)):
+        if start_index in visited:
+            continue
+        stack = [start_index]
+        component_indices: list[int] = []
+        component_reasons: list[str] = []
+        while stack:
+            current = stack.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            component_indices.append(current)
+            for neighbor in adjacency[current]:
+                component_reasons.extend(edge_reasons.get(frozenset({current, neighbor}), []))
+                if neighbor not in visited:
+                    stack.append(neighbor)
+        components.append(
+            ([changed_files[index] for index in sorted(component_indices)], dedupe_preserving_order(component_reasons))
+        )
+    return components
+
+
+def select_component_label(files: list[ChangedFile]) -> str:
+    ranked_labels = Counter(file.label for file in files)
+    return sorted(
+        ranked_labels,
+        key=lambda label: (
+            ranked_labels[label],
+            label not in {"New implementation modules", "Core implementation changes"},
+            label,
+        ),
+        reverse=True,
+    )[0]
+
+
 def build_code_fingerprint_candidates(
     request: AnalysisRequest,
     repo_mirror: RepoMirror | None,
@@ -1141,6 +1264,12 @@ class StrategyDrivenRepoTracer:
         )
         warnings.extend(framework_signature_warnings)
         candidates.extend(framework_signature_candidates)
+        metadata_url_candidates, metadata_url_warnings = build_metadata_url_candidates(
+            request,
+            self.repo_mirror,
+        )
+        warnings.extend(metadata_url_warnings)
+        candidates.extend(metadata_url_candidates)
         dependency_candidates, dependency_warnings = build_dependency_archaeology_candidates(
             request,
             self.repo_mirror,
@@ -1168,6 +1297,7 @@ class StrategyDrivenRepoTracer:
                 *[candidate.repo_url for candidate in paper_candidates],
                 *[candidate.repo_url for candidate in fossil_candidates],
                 *[candidate.repo_url for candidate in framework_signature_candidates],
+                *[candidate.repo_url for candidate in metadata_url_candidates],
                 *[candidate.repo_url for candidate in dependency_candidates],
                 *[candidate.repo_url for candidate in github_code_search_candidates],
                 *[candidate.repo_url for candidate in code_reference_candidates],
@@ -1303,46 +1433,29 @@ class LiveRepoDiffAnalyzer:
             )
 
         cluster_states: list[ClusterState] = []
-        for changed_file in changed_files:
-            assigned_cluster: ClusterState | None = None
-            for cluster_state in cluster_states:
-                shared_tags = set(changed_file.semantic_tags) & set(cluster_state.semantic_tags)
-                shared_imports = set(changed_file.imports) & set(cluster_state.stems)
-                same_bucket = cluster_state.change_type == changed_file.change_type
-                same_label = cluster_state.label == changed_file.label
-                same_parent = cluster_state.parent_dir == changed_file.parent_dir
-                if same_bucket and (shared_tags or shared_imports or (same_label and same_parent)):
-                    assigned_cluster = cluster_state
-                    break
-
-            if assigned_cluster is None:
-                cluster_states.append(
-                    ClusterState(
-                        change_type=changed_file.change_type,
-                        label=changed_file.label,
-                        files=[changed_file.relative_path],
-                        semantic_tags=list(changed_file.semantic_tags),
-                        imports=list(changed_file.imports),
-                        stems=[changed_file.stem],
-                        parent_dir=changed_file.parent_dir,
-                        rationales=[changed_file.rationale],
-                    )
+        for component_files, component_link_reasons in build_changed_file_components(changed_files):
+            lead_file = component_files[0]
+            cluster_states.append(
+                ClusterState(
+                    change_type=lead_file.change_type,
+                    label=select_component_label(component_files),
+                    files=sorted(file.relative_path for file in component_files),
+                    semantic_tags=dedupe_preserving_order(
+                        [tag for file in component_files for tag in file.semantic_tags]
+                    ),
+                    imports=dedupe_preserving_order(
+                        [import_name for file in component_files for import_name in file.imports]
+                    ),
+                    stems=dedupe_preserving_order([file.stem for file in component_files]),
+                    parent_dir=lead_file.parent_dir,
+                    rationales=dedupe_preserving_order([file.rationale for file in component_files]),
+                    link_reasons=component_link_reasons,
                 )
-                continue
-
-            assigned_cluster.files.append(changed_file.relative_path)
-            assigned_cluster.semantic_tags = dedupe_preserving_order(
-                [*assigned_cluster.semantic_tags, *changed_file.semantic_tags]
-            )
-            assigned_cluster.imports = dedupe_preserving_order([*assigned_cluster.imports, *changed_file.imports])
-            assigned_cluster.stems = dedupe_preserving_order([*assigned_cluster.stems, changed_file.stem])
-            assigned_cluster.rationales = dedupe_preserving_order(
-                [*assigned_cluster.rationales, changed_file.rationale]
             )
 
         diff_clusters = []
         for index, cluster_state in enumerate(cluster_states, start=1):
-            files = sorted(cluster_state.files)
+            files = cluster_state.files
             semantic_tags = list(cluster_state.semantic_tags)
             rationale = "; ".join(cluster_state.rationales[:2])
             summary = summarize_cluster(
@@ -1351,6 +1464,8 @@ class LiveRepoDiffAnalyzer:
                 cluster_state.change_type,
                 rationale,
             )
+            if cluster_state.link_reasons:
+                summary = f"{summary} Linked by {'; '.join(cluster_state.link_reasons[:2])}."
             if semantic_tags:
                 summary = f"{summary} Semantic tags: {', '.join(semantic_tags[:4])}."
             diff_clusters.append(

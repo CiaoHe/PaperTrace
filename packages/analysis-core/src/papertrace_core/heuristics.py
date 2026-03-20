@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 
 from papertrace_core.models import (
     ContributionMapping,
@@ -173,6 +174,7 @@ REFERENCE_RE = re.compile(r"\b(?:eq(?:uation)?\.?\s*\d+|algorithm\s*\d+|table\s*
 DIFFERENCE_MARKERS = ("instead of", "rather than", "without", "compared to", "unlike", "differs from")
 PROBLEM_MARKERS = ("for ", "to ", "so that ", "while ", "which ")
 IMPL_DETAIL_MARKERS = ("implementation", "training", "hyperparameter", "batch size", "optimizer", "warmup", "kernel")
+STEP_SPLIT_RE = re.compile(r"[.;:]\s+|\s+(?:and|then|while)\s+", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -181,6 +183,13 @@ class SectionFinding:
     section_heading: str
     snippet: str
     score: int
+
+
+@dataclass
+class ContributionCluster:
+    findings: list[SectionFinding] = field(default_factory=list)
+    theme_tokens: set[str] = field(default_factory=set)
+    reference_markers: list[str] = field(default_factory=list)
 
 
 def infer_contributions(case_slug: str, title: str, text: str) -> list[PaperContribution]:
@@ -386,9 +395,12 @@ def iter_candidate_sections(paper_document: PaperDocument) -> list[PaperSection]
 def infer_structured_contributions(paper_document: PaperDocument) -> list[PaperContribution]:
     method_findings = collect_section_findings(paper_document, {"contributions", "method", "abstract"})
     detail_findings = collect_section_findings(paper_document, {"experiments", "appendix"})
-    contributions = findings_to_contributions(method_findings, prefix="S")
+    contributions = synthesize_global_contributions(method_findings, detail_findings)
     if not contributions:
         return []
+    fallback_contributions = findings_to_contributions(method_findings, prefix="S")
+    if fallback_contributions:
+        contributions = merge_contribution_sets(contributions, fallback_contributions)
     return merge_contribution_details(contributions, detail_findings)
 
 
@@ -446,6 +458,141 @@ def findings_to_contributions(findings: list[SectionFinding], prefix: str) -> li
         )
         if len(contributions) >= 5:
             break
+    return dedupe_contributions(contributions)
+
+
+def finding_theme_tokens(finding: SectionFinding) -> set[str]:
+    title_tokens = tokenize(sentence_to_title(finding.snippet))
+    snippet_tokens = tokenize(finding.snippet)
+    return {
+        token
+        for token in (title_tokens | snippet_tokens)
+        if len(token) >= 4 and token not in {"paper", "method", "results", "using", "show", "present"}
+    }
+
+
+def cluster_finding_similarity(cluster: ContributionCluster, finding: SectionFinding) -> int:
+    finding_tokens = finding_theme_tokens(finding)
+    overlap = len(cluster.theme_tokens & finding_tokens)
+    section_bonus = 1 if any(item.section_kind != finding.section_kind for item in cluster.findings) else 0
+    reference_bonus = 1 if set(cluster.reference_markers) & set(extract_reference_markers(finding.snippet)) else 0
+    return overlap + section_bonus + reference_bonus
+
+
+def merge_finding_into_cluster(cluster: ContributionCluster, finding: SectionFinding) -> None:
+    cluster.findings.append(finding)
+    cluster.theme_tokens.update(finding_theme_tokens(finding))
+    cluster.reference_markers = list(
+        dict.fromkeys([*cluster.reference_markers, *extract_reference_markers(finding.snippet)])
+    )[:6]
+
+
+def build_contribution_clusters(findings: list[SectionFinding]) -> list[ContributionCluster]:
+    clusters: list[ContributionCluster] = []
+    for finding in findings:
+        if finding.score < 4:
+            continue
+        best_cluster: ContributionCluster | None = None
+        best_similarity = 0
+        for cluster in clusters:
+            similarity = cluster_finding_similarity(cluster, finding)
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_cluster = cluster
+        if best_cluster is not None and best_similarity >= 2:
+            merge_finding_into_cluster(best_cluster, finding)
+            continue
+        cluster = ContributionCluster()
+        merge_finding_into_cluster(cluster, finding)
+        clusters.append(cluster)
+    return clusters
+
+
+def select_cluster_lead_finding(cluster: ContributionCluster) -> SectionFinding:
+    return max(
+        cluster.findings,
+        key=lambda finding: (
+            finding.score,
+            finding.section_kind == "contributions",
+            finding.section_kind == "method",
+            len(finding.snippet),
+        ),
+    )
+
+
+def cluster_keywords(cluster: ContributionCluster) -> list[str]:
+    counts = Counter(
+        token for finding in cluster.findings for token in finding_theme_tokens(finding) if len(token) >= 4
+    )
+    return [token for token, _ in counts.most_common(6)]
+
+
+def synthesize_global_contributions(
+    core_findings: list[SectionFinding],
+    detail_findings: list[SectionFinding],
+) -> list[PaperContribution]:
+    all_findings = [*core_findings, *detail_findings]
+    clusters = build_contribution_clusters(all_findings)
+    ranked_clusters = sorted(
+        clusters,
+        key=lambda cluster: (
+            sum(finding.score for finding in cluster.findings)
+            + len({finding.section_kind for finding in cluster.findings}),
+            len(cluster.findings),
+        ),
+        reverse=True,
+    )
+    contributions: list[PaperContribution] = []
+    for index, cluster in enumerate(ranked_clusters, start=1):
+        if len(contributions) >= 5:
+            break
+        lead_finding = select_cluster_lead_finding(cluster)
+        keywords = cluster_keywords(cluster)
+        if len(keywords) < 2:
+            continue
+        impl_hints = list(
+            dict.fromkeys(finding.snippet.strip() for finding in cluster.findings if finding.snippet.strip())
+        )[:4]
+        references = list(
+            dict.fromkeys(
+                reference for finding in cluster.findings for reference in extract_reference_markers(finding.snippet)
+            )
+        )[:6]
+        contribution_complexity = max(
+            infer_complexity(finding.snippet, extract_reference_markers(finding.snippet))
+            for finding in cluster.findings
+        )
+        contribution_complexity = min(
+            contribution_complexity + max(len({finding.section_kind for finding in cluster.findings}) - 1, 0),
+            5,
+        )
+        contributions.append(
+            PaperContribution(
+                id=f"G{index}",
+                title=sentence_to_title(lead_finding.snippet),
+                section=lead_finding.section_heading or "Body",
+                keywords=keywords,
+                impl_hints=impl_hints,
+                problem_solved=next(
+                    (
+                        inferred
+                        for finding in cluster.findings
+                        if (inferred := infer_problem_solved(finding.snippet)) is not None
+                    ),
+                    None,
+                ),
+                baseline_difference=next(
+                    (
+                        inferred
+                        for finding in cluster.findings
+                        if (inferred := infer_baseline_difference(finding.snippet)) is not None
+                    ),
+                    None,
+                ),
+                evidence_refs=references,
+                implementation_complexity=contribution_complexity,
+            )
+        )
     return dedupe_contributions(contributions)
 
 
@@ -565,7 +712,14 @@ def rank_contribution_match(
     hint_hits = sorted({token for hint in contribution.impl_hints for token in tokenize(hint) if token in haystack})
     reference_hits = [reference for reference in contribution.evidence_refs if reference.lower() in haystack]
 
-    score = len(keyword_hits) * 5 + len(title_hits) * 2 + min(len(hint_hits), 3) + len(reference_hits) * 2
+    step_hits, missing_steps = trace_contribution_steps(contribution, diff_cluster)
+    score = (
+        len(keyword_hits) * 5
+        + len(title_hits) * 2
+        + min(len(hint_hits), 3)
+        + len(reference_hits) * 2
+        + len(step_hits) * 3
+    )
     if score == 0:
         return 0, ""
 
@@ -578,11 +732,75 @@ def rank_contribution_match(
         evidence_parts.append(f"impl hints: {', '.join(hint_hits[:3])}")
     if reference_hits:
         evidence_parts.append(f"reference overlap: {', '.join(reference_hits[:2])}")
+    if step_hits:
+        evidence_parts.append(f"algorithm steps: {', '.join(step_hits[:2])}")
+    elif missing_steps:
+        evidence_parts.append(f"step gaps: {', '.join(missing_steps[:2])}")
     if diff_cluster.semantic_tags:
         evidence_parts.append(f"semantic tags: {', '.join(diff_cluster.semantic_tags[:3])}")
     evidence_parts.append(f"cluster files: {', '.join(diff_cluster.files[:2])}")
     evidence_parts.append(f"cluster type: {diff_cluster.change_type}")
     return score, "; ".join(evidence_parts)
+
+
+def extract_impl_steps(contribution: PaperContribution) -> list[str]:
+    raw_steps = [contribution.title, *contribution.impl_hints]
+    steps: list[str] = []
+    for raw_step in raw_steps:
+        for segment in STEP_SPLIT_RE.split(raw_step):
+            normalized = segment.strip(" -")
+            if len(normalized) < 18:
+                continue
+            steps.append(normalized)
+    return list(dict.fromkeys(steps))[:5]
+
+
+def trace_contribution_steps(
+    contribution: PaperContribution,
+    diff_cluster: DiffCluster,
+) -> tuple[list[str], list[str]]:
+    haystack = " ".join(
+        [diff_cluster.label, diff_cluster.summary, *diff_cluster.files, *diff_cluster.semantic_tags]
+    ).lower()
+    supported_steps: list[str] = []
+    missing_steps: list[str] = []
+    for step in extract_impl_steps(contribution):
+        step_tokens = [token for token in tokenize(step) if len(token) >= 4]
+        overlap = [token for token in step_tokens if token in haystack]
+        if len(overlap) >= 2 or (overlap and any(tag in overlap for tag in diff_cluster.semantic_tags)):
+            supported_steps.append(sentence_to_title(step))
+        else:
+            missing_steps.append(sentence_to_title(step))
+    return supported_steps, missing_steps
+
+
+def path_review_tokens(relative_path: str) -> set[str]:
+    normalized = relative_path.replace("/", " ").replace("_", " ").replace(".", " ")
+    return tokenize(normalized)
+
+
+def select_learning_entry_point(contribution: PaperContribution, diff_cluster: DiffCluster) -> str | None:
+    best_file: str | None = None
+    best_score = -1
+    contribution_tokens = tokenize(contribution.title) | set(contribution.keywords)
+    for relative_path in diff_cluster.files:
+        file_score = len(contribution_tokens & path_review_tokens(relative_path))
+        if file_score > best_score:
+            best_score = file_score
+            best_file = relative_path
+    return best_file or (diff_cluster.files[0] if diff_cluster.files else None)
+
+
+def order_cluster_files_for_review(contribution: PaperContribution, diff_cluster: DiffCluster) -> list[str]:
+    contribution_tokens = tokenize(contribution.title) | set(contribution.keywords)
+    return sorted(
+        diff_cluster.files,
+        key=lambda relative_path: (
+            -len(contribution_tokens & path_review_tokens(relative_path)),
+            -int(any(tag in relative_path.lower() for tag in diff_cluster.semantic_tags)),
+            relative_path,
+        ),
+    )
 
 
 def infer_mappings(
@@ -607,9 +825,14 @@ def infer_mappings(
         )
         score, selected_contribution = ranked_contributions[0]
         used_contribution_ids.add(selected_contribution.id)
-        confidence = min(0.62 + 0.04 * score, 0.96)
-        implementation_coverage = min(0.2 + 0.08 * score, 1.0)
+        supported_steps, missing_steps = trace_contribution_steps(selected_contribution, diff_cluster)
+        total_steps = max(len(extract_impl_steps(selected_contribution)), 1)
+        step_coverage = len(supported_steps) / total_steps
+        confidence = min(0.6 + 0.035 * score + 0.12 * step_coverage, 0.97)
+        implementation_coverage = min(0.15 + 0.06 * score + 0.25 * step_coverage, 1.0)
         missing_aspects: list[str] = []
+        if missing_steps:
+            missing_aspects.append(f"untraced implementation steps: {', '.join(missing_steps[:2])}")
         if selected_contribution.evidence_refs and len(selected_contribution.impl_hints) < 2:
             missing_aspects.append("theoretical reference is present but implementation detail remains sparse")
         if selected_contribution.baseline_difference and not any(
@@ -619,6 +842,10 @@ def infer_mappings(
         engineering_divergences: list[str] = []
         if diff_cluster.change_type.name == "MODIFIED_INFRA":
             engineering_divergences.append("implementation is exposed mostly through infrastructure-level changes")
+        if diff_cluster.semantic_tags and not set(diff_cluster.semantic_tags) & set(selected_contribution.keywords):
+            engineering_divergences.append(
+                "cluster semantics only partially align with the paper contribution vocabulary"
+            )
         if implementation_coverage >= 0.85:
             coverage_type = CoverageType.FULL
             completeness = "complete"
@@ -646,8 +873,8 @@ def infer_mappings(
                 coverage_type=coverage_type,
                 missing_aspects=missing_aspects,
                 engineering_divergences=engineering_divergences,
-                learning_entry_point=diff_cluster.files[0] if diff_cluster.files else None,
-                reading_order=diff_cluster.files,
+                learning_entry_point=select_learning_entry_point(selected_contribution, diff_cluster),
+                reading_order=order_cluster_files_for_review(selected_contribution, diff_cluster),
             )
         )
     return mappings

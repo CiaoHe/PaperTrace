@@ -287,6 +287,68 @@ def test_live_repo_diff_analyzer_sets_related_clusters_by_semantic_tags(
         assert any(cluster.related_cluster_ids for cluster in result.diff_clusters)
 
 
+def test_live_repo_diff_analyzer_uses_graph_component_clustering(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    base_repo = tmp_path / "base-graph"
+    target_repo = tmp_path / "target-graph"
+    init_git_repo(base_repo, {"src/base.py": "def base():\n    return 1\n"})
+    init_git_repo(
+        target_repo,
+        {
+            "src/kernel/attention_kernel.py": "def attention_kernel(qkv):\n    return qkv\n",
+            "src/router/router_bridge.py": (
+                "from src.kernel.attention_kernel import attention_kernel\n\n"
+                "def router_bridge(tokens):\n    return attention_kernel(tokens)\n"
+            ),
+            "src/runtime/attention_flow.py": (
+                "from src.router.router_bridge import router_bridge\n\n"
+                "def route_attention(batch):\n    return router_bridge(batch)\n"
+            ),
+        },
+    )
+
+    analyzer = LiveRepoDiffAnalyzer(
+        repo_mirror=StaticRepoMirror(
+            {
+                "https://github.com/example/base-graph": base_repo,
+                "https://github.com/example/target-graph": target_repo,
+            }
+        ),
+        settings=repo_settings,
+    )
+    result = analyzer.analyze(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/9999.00008",
+            repo_url="https://github.com/example/target-graph",
+        ),
+        BaseRepoCandidate(
+            repo_url="https://github.com/example/base-graph",
+            strategy="readme_declaration",
+            confidence=0.9,
+            evidence="test",
+        ),
+        [
+            PaperContribution(
+                id="C1",
+                title="Attention kernel routing",
+                section="Section 3",
+                keywords=["attention", "kernel", "routing"],
+                impl_hints=["Bridge kernel execution into training."],
+            )
+        ],
+    )
+
+    assert len(result.diff_clusters) == 1
+    assert result.diff_clusters[0].files == [
+        "src/kernel/attention_kernel.py",
+        "src/router/router_bridge.py",
+        "src/runtime/attention_flow.py",
+    ]
+    assert "Linked by" in result.diff_clusters[0].summary
+
+
 def test_repo_tracer_uses_live_code_fingerprint_candidates(
     tmp_path: Path,
     repo_settings: Settings,
@@ -690,6 +752,49 @@ def test_repo_tracer_extracts_shape_similarity_candidates(
 
     assert trace_output.selected_base_repo.strategy == "shape_similarity"
     assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
+
+
+def test_repo_tracer_extracts_metadata_url_candidates(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    target_repo = tmp_path / "target-metadata"
+    init_git_repo(
+        target_repo,
+        {
+            "src/core.py": "def train():\n    return 'ok'\n",
+            "CITATION.cff": (
+                "cff-version: 1.2.0\n"
+                "message: Cite this software.\n"
+                "repository-code: https://github.com/example/upstream-citation\n"
+            ),
+        },
+    )
+
+    tracer = StrategyDrivenRepoTracer(
+        repo_metadata_provider=EmptyRepoMetadataProvider(),
+        repo_mirror=StaticRepoMirror({"https://github.com/example/target-metadata": target_repo}),
+        settings=repo_settings,
+    )
+    trace_output = tracer.trace(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/9999.00009",
+            repo_url="https://github.com/example/target-metadata",
+        ),
+        PaperDocument(
+            source_kind=PaperSourceKind.ARXIV,
+            source_ref="https://arxiv.org/abs/9999.00009",
+            title="Metadata URL Test",
+            abstract="",
+            sections=[],
+            text="No explicit upstream mention.",
+        ),
+        [],
+    )
+
+    assert trace_output.selected_base_repo.strategy == "metadata_url"
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/example/upstream-citation"
+    assert any(candidate.strategy == "metadata_url" for candidate in trace_output.candidates)
 
 
 def test_repo_tracer_extracts_github_code_search_candidates(

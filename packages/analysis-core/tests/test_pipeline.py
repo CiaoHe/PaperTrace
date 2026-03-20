@@ -7,6 +7,8 @@ from papertrace_core.models import (
     AnalysisRequest,
     BaseRepoCandidate,
     CoverageType,
+    DiffChangeType,
+    DiffCluster,
     PaperContribution,
     PaperDocument,
     PaperSection,
@@ -278,6 +280,60 @@ def test_heuristic_paper_parser_extracts_enumerated_contributions_from_sections(
     assert "Paper parser did not find an explicit method section." in result.warnings
 
 
+def test_heuristic_paper_parser_synthesizes_cross_section_evidence() -> None:
+    request = AnalysisRequest(
+        paper_source="/tmp/cross-section-paper.pdf",
+        repo_url="https://github.com/example/research-repo",
+    )
+    paper_document = PaperDocument(
+        source_kind=PaperSourceKind.PDF_FILE,
+        source_ref=request.paper_source,
+        title="Sparse Routing Distillation",
+        abstract=(
+            "We introduce a sparse routing encoder for long-context retrieval and pair it with"
+            " a distillation objective for stable CPU validation."
+        ),
+        sections=[
+            PaperSection(
+                heading="2 Method",
+                text=(
+                    "We introduce a sparse routing encoder that compresses long documents into routing slots.\n"
+                    "The routing encoder preserves hard-negative retrieval quality "
+                    "rather than dense full-context passes.\n"
+                    "Algorithm 1 describes the sparse routing update."
+                ),
+            ),
+            PaperSection(
+                heading="4 Experiments",
+                text=(
+                    "Implementation details: the sparse routing encoder uses CPU-friendly "
+                    "batching and cached slot reuse.\n"
+                    "Table 3 shows stable latency under local validation."
+                ),
+            ),
+        ],
+        text=(
+            "Sparse Routing Distillation\n"
+            "We introduce a sparse routing encoder for long-context retrieval "
+            "and pair it with a distillation objective.\n"
+            "We introduce a sparse routing encoder that compresses long documents into routing slots.\n"
+            "The routing encoder preserves hard-negative retrieval quality "
+            "rather than dense full-context passes.\n"
+            "Algorithm 1 describes the sparse routing update.\n"
+            "Implementation details: the sparse routing encoder uses CPU-friendly batching and cached slot reuse."
+        ),
+    )
+
+    result = HeuristicPaperParser().parse(request, paper_document)
+
+    assert result.mode == ProcessorMode.HEURISTIC
+    assert result.contributions
+    assert any("sparse routing encoder" in contribution.title.lower() for contribution in result.contributions)
+    assert any(len(contribution.impl_hints) >= 2 for contribution in result.contributions)
+    assert any("Algorithm 1" in contribution.evidence_refs for contribution in result.contributions)
+    assert any((contribution.implementation_complexity or 0) >= 4 for contribution in result.contributions)
+
+
 def test_heuristic_paper_parser_reports_gap_when_only_abstract_is_available() -> None:
     request = AnalysisRequest(
         paper_source="/tmp/abstract-only-paper.pdf",
@@ -389,3 +445,38 @@ def test_contribution_mapper_returns_empty_matches_with_explicit_unmatched_ids()
     assert output.unmatched_contribution_ids == ["C1"]
     assert output.unmatched_diff_cluster_ids == ["D9"]
     assert "no confident heuristic matches" in " ".join(output.warnings).lower()
+
+
+def test_infer_mappings_traces_steps_and_review_order() -> None:
+    contribution = PaperContribution(
+        id="C7",
+        title="Sparse routing encoder",
+        section="Method",
+        keywords=["sparse", "routing", "encoder", "slots"],
+        impl_hints=[
+            "Compress long documents into routing slots.",
+            "Reuse cached slots during local validation.",
+            "Apply temperature-scaled reranking before decoding.",
+        ],
+        baseline_difference="rather than dense full-context passes",
+        evidence_refs=["Algorithm 1"],
+    )
+    diff_cluster = DiffCluster(
+        id="D7",
+        label="Sparse routing encoder",
+        change_type=DiffChangeType.NEW_MODULE,
+        files=["src/sparse_router.py", "src/train.py"],
+        summary=(
+            "Sparse routing encoder inferred from src/sparse_router.py; bucketed as new_module because"
+            " content includes routing encoder slots and local validation cache reuse."
+        ),
+        semantic_tags=["routing", "encoder", "cache"],
+    )
+
+    mappings = infer_mappings([contribution], [diff_cluster])
+
+    assert len(mappings) == 1
+    assert mappings[0].learning_entry_point == "src/sparse_router.py"
+    assert mappings[0].reading_order[0] == "src/sparse_router.py"
+    assert "untraced implementation steps:" in " ".join(mappings[0].missing_aspects)
+    assert mappings[0].implementation_coverage > 0.5
