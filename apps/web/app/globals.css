@@ -52,6 +52,10 @@ select {
   max-width: 1480px;
 }
 
+.evidence-shell {
+  max-width: min(1760px, calc(100vw - 40px));
+}
+
 .hero {
   display: grid;
   gap: 16px;
@@ -410,6 +414,51 @@ select {
   align-items: flex-start;
 }
 
+.evidence-review-shell {
+  display: grid;
+  gap: 18px;
+  min-height: calc(100vh - 92px);
+}
+
+.evidence-review-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 320px) minmax(0, 1.2fr) minmax(320px, 360px);
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.evidence-review-rail,
+.evidence-review-main {
+  min-width: 0;
+}
+
+.evidence-review-rail-inner {
+  position: sticky;
+  top: 24px;
+  display: grid;
+  gap: 14px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.evidence-review-main {
+  display: grid;
+  gap: 16px;
+}
+
+.evidence-focus-card {
+  gap: 14px;
+}
+
+.evidence-focus-metrics {
+  align-items: stretch;
+}
+
+.evidence-detail-grid {
+  align-items: flex-start;
+}
+
 .workbench-column,
 .workbench-main {
   display: grid;
@@ -537,12 +586,6 @@ select {
   margin: 0;
 }
 
-.annotation-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
 .annotation-card {
   display: grid;
   gap: 12px;
@@ -552,15 +595,36 @@ select {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(233, 243, 246, 0.7));
 }
 
+.annotation-card-compact {
+  align-content: flex-start;
+}
+
 .annotation-card h5,
 .annotation-card p {
   margin: 0;
+}
+
+.review-ribbon {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .code-anchor-list,
 .checklist {
   display: grid;
   gap: 10px;
+}
+
+.code-review-shell {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.code-review-sidebar {
+  align-content: start;
 }
 
 .code-anchor-browser {
@@ -610,15 +674,27 @@ select {
 .monaco-shell {
   display: grid;
   gap: 10px;
-  padding: 12px;
+  padding: 14px;
   border-radius: 16px;
   border: 1px solid rgba(24, 33, 47, 0.1);
   background: rgba(255, 255, 255, 0.82);
 }
 
+.monaco-shell.review-mode {
+  min-height: 680px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(233, 243, 246, 0.74));
+}
+
 .monaco-shell.empty {
   min-height: 140px;
   align-items: center;
+}
+
+.monaco-frame {
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid rgba(24, 33, 47, 0.08);
+  background: white;
 }
 
 .checklist-item {
@@ -670,11 +746,24 @@ select {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .review-ribbon,
+  .code-review-shell,
+  .evidence-review-grid,
   .evidence-workspace-grid,
   .lineage-graph,
-  .annotation-grid,
   .workbench-grid,
   .detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .evidence-review-rail-inner {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+
+  .monaco-shell.review-mode {
+    min-height: 0;
   }
 }

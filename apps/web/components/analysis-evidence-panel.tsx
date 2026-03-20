@@ -97,8 +97,8 @@ export function AnalysisEvidencePanel({ contribution, diffCluster, mapping }: An
         </div>
       </div>
 
-      <div className="annotation-grid">
-        <div className="annotation-card">
+      <div className="review-ribbon" data-testid="evidence-review-ribbon">
+        <div className="annotation-card annotation-card-compact">
           <small>Paper claim</small>
           <h5>{contribution ? `${contribution.id} · ${contribution.title}` : "No contribution selected"}</h5>
           {paperClaims.length > 0 ? (
@@ -123,68 +123,7 @@ export function AnalysisEvidencePanel({ contribution, diffCluster, mapping }: An
           ) : null}
         </div>
 
-        <div className="annotation-card">
-          <small>Code anchors</small>
-          <h5>{diffCluster ? `${diffCluster.id} · ${diffCluster.label}` : "No diff cluster selected"}</h5>
-          {diffCluster ? (
-            <>
-              <p>{diffCluster.summary}</p>
-              {semanticTags.length > 0 ? (
-                <div className="pill-row">
-                  {semanticTags.map((tag) => (
-                    <span className="pill" key={tag}>
-                      {tag}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-              <div className="code-anchor-browser">
-                <div className="code-anchor-list">
-                  <div className="actions" style={{ marginBottom: 12, position: "relative", zIndex: 1 }}>
-                    <button
-                      className={`button secondary${reviewMode === "anchor" ? " active" : ""}`}
-                      onClick={() => setReviewMode("anchor")}
-                      style={{ position: "relative", zIndex: 1 }}
-                      type="button"
-                    >
-                      Focused anchor
-                    </button>
-                    <button
-                      className={`button secondary${reviewMode === "cluster" ? " active" : ""}`}
-                      onClick={() => setReviewMode("cluster")}
-                      style={{ position: "relative", zIndex: 1 }}
-                      type="button"
-                    >
-                      Full cluster patch
-                    </button>
-                  </div>
-                  {codeAnchors.length > 0 ? (
-                    codeAnchors.map((anchor, index) => (
-                      <button
-                        className={`code-anchor-button${selectedAnchorKey === anchorKey(anchor) ? " active" : ""}`}
-                        key={anchorKey(anchor)}
-                        onClick={() => setSelectedAnchorKey(anchorKey(anchor))}
-                        type="button"
-                      >
-                        <strong>
-                          {index + 1}. {anchor.file_path}:{anchor.start_line}-{anchor.end_line}
-                        </strong>
-                        <p>{anchor.reason}</p>
-                      </button>
-                    ))
-                  ) : (
-                    <p className="muted">No code anchors available for the selected cluster yet.</p>
-                  )}
-                </div>
-                <AnalysisMonacoDiffViewer anchor={selectedAnchor} cluster={diffCluster} mode={reviewMode} />
-              </div>
-            </>
-          ) : (
-            <p className="muted">Choose a diff cluster to expose the current code reading path.</p>
-          )}
-        </div>
-
-        <div className="annotation-card">
+        <div className="annotation-card annotation-card-compact">
           <small>Review protocol</small>
           <h5>{mapping ? `${mapping.diff_cluster_id} → ${mapping.contribution_id}` : "No mapping selected"}</h5>
           {mapping ? (
@@ -203,19 +142,88 @@ export function AnalysisEvidencePanel({ contribution, diffCluster, mapping }: An
                   ))}
                 </div>
               ) : null}
-              <div className="checklist">
-                {reviewChecklist.map((item) => (
-                  <div className="checklist-item" key={item}>
-                    <span />
-                    <p>{item}</p>
-                  </div>
-                ))}
-              </div>
             </>
           ) : (
             <p className="muted">Select a mapping to generate a reviewer checklist.</p>
           )}
         </div>
+
+        <div className="annotation-card annotation-card-compact">
+          <small>Cluster context</small>
+          <h5>{diffCluster ? `${diffCluster.id} · ${diffCluster.label}` : "No diff cluster selected"}</h5>
+          {diffCluster ? (
+            <>
+              <p>{diffCluster.summary}</p>
+              {semanticTags.length > 0 ? (
+                <div className="pill-row">
+                  {semanticTags.map((tag) => (
+                    <span className="pill" key={tag}>
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <p className="muted">Choose a diff cluster to expose the current code reading path.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="code-review-shell" data-testid="evidence-code-review-shell">
+        <div className="annotation-card code-review-sidebar">
+          <div className="actions">
+            <button
+              className={`button secondary${reviewMode === "anchor" ? " active" : ""}`}
+              onClick={() => setReviewMode("anchor")}
+              type="button"
+            >
+              Focused anchor
+            </button>
+            <button
+              className={`button secondary${reviewMode === "cluster" ? " active" : ""}`}
+              onClick={() => setReviewMode("cluster")}
+              type="button"
+            >
+              Full cluster patch
+            </button>
+          </div>
+          <div className="code-anchor-list">
+            {codeAnchors.length > 0 ? (
+              codeAnchors.map((anchor, index) => (
+                <button
+                  className={`code-anchor-button${selectedAnchorKey === anchorKey(anchor) ? " active" : ""}`}
+                  key={anchorKey(anchor)}
+                  onClick={() => setSelectedAnchorKey(anchorKey(anchor))}
+                  type="button"
+                >
+                  <strong>
+                    {index + 1}. {anchor.file_path}:{anchor.start_line}-{anchor.end_line}
+                  </strong>
+                  <p>{anchor.reason}</p>
+                </button>
+              ))
+            ) : (
+              <p className="muted">No code anchors available for the selected cluster yet.</p>
+            )}
+          </div>
+          <div className="checklist">
+            {reviewChecklist.map((item) => (
+              <div className="checklist-item" key={item}>
+                <span />
+                <p>{item}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <AnalysisMonacoDiffViewer
+          anchor={selectedAnchor}
+          className="review-mode"
+          cluster={diffCluster}
+          height="min(72vh, 920px)"
+          mode={reviewMode}
+        />
       </div>
     </div>
   );

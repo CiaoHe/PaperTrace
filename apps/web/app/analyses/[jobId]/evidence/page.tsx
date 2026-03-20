@@ -14,7 +14,7 @@ export default async function EvidencePage({ params }: EvidencePageProps) {
     const [job, result] = await Promise.all([getAnalysis(params.jobId), getAnalysisResult(params.jobId)]);
 
     return (
-      <main className="shell shell-wide">
+      <main className="shell shell-wide evidence-shell">
         <AnalysisEvidenceWorkspace jobId={params.jobId} result={result} submittedRepoUrl={job.repo_url} />
       </main>
     );
@@ -22,7 +22,7 @@ export default async function EvidencePage({ params }: EvidencePageProps) {
     const message = error instanceof Error ? error.message : "Failed to load evidence workspace.";
 
     return (
-      <main className="shell shell-wide">
+      <main className="shell shell-wide evidence-shell">
         <div className="panel">
           <div className="panel-inner stack">
             <div className="page-head">

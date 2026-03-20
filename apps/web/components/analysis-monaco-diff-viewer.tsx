@@ -13,6 +13,8 @@ interface AnalysisMonacoDiffViewerProps {
   anchor: DiffCodeAnchor | null;
   cluster: DiffCluster | null;
   mode: MonacoReviewMode;
+  className?: string;
+  height?: number | string;
 }
 
 function languageForFile(filePath: string): string {
@@ -69,10 +71,18 @@ function buildClusterPatchDocument(cluster: DiffCluster): { original: string; mo
   };
 }
 
-export function AnalysisMonacoDiffViewer({ anchor, cluster, mode }: AnalysisMonacoDiffViewerProps) {
+export function AnalysisMonacoDiffViewer({
+  anchor,
+  cluster,
+  mode,
+  className,
+  height = "280px",
+}: AnalysisMonacoDiffViewerProps) {
+  const shellClassName = ["monaco-shell", className].filter(Boolean).join(" ");
+
   if (mode === "cluster" && !cluster) {
     return (
-      <div className="monaco-shell empty" data-testid="monaco-evidence-viewer">
+      <div className={`${shellClassName} empty`} data-testid="monaco-evidence-viewer">
         <p className="muted">Select a diff cluster to open the full cluster patch view.</p>
       </div>
     );
@@ -80,7 +90,7 @@ export function AnalysisMonacoDiffViewer({ anchor, cluster, mode }: AnalysisMona
 
   if (mode === "anchor" && !anchor) {
     return (
-      <div className="monaco-shell empty" data-testid="monaco-evidence-viewer">
+      <div className={`${shellClassName} empty`} data-testid="monaco-evidence-viewer">
         <p className="muted">Select a code anchor to open the diff viewer.</p>
       </div>
     );
@@ -93,7 +103,7 @@ export function AnalysisMonacoDiffViewer({ anchor, cluster, mode }: AnalysisMona
   const language = mode === "cluster" ? "plaintext" : languageForFile(anchor?.file_path ?? "");
 
   return (
-    <div className="monaco-shell" data-testid="monaco-evidence-viewer">
+    <div className={shellClassName} data-testid="monaco-evidence-viewer">
       <div className="trace-head">
         <div>
           <small>Monaco diff viewer</small>
@@ -114,22 +124,25 @@ export function AnalysisMonacoDiffViewer({ anchor, cluster, mode }: AnalysisMona
                 : "n/a"
             } -> current ${anchor?.start_line ?? 0}-${anchor?.end_line ?? 0}`}
       </p>
-      <DiffEditor
-        height="280px"
-        language={language}
-        options={{
-          minimap: { enabled: false },
-          readOnly: true,
-          renderSideBySide: true,
-          scrollBeyondLastLine: false,
-          wordWrap: "on",
-          automaticLayout: true,
-          fontSize: 13,
-        }}
-        original={originalValue}
-        modified={modifiedValue}
-        theme="vs-light"
-      />
+      <div className="monaco-frame">
+        <DiffEditor
+          height={height}
+          language={language}
+          options={{
+            minimap: { enabled: false },
+            readOnly: true,
+            renderSideBySide: true,
+            scrollBeyondLastLine: false,
+            wordWrap: "on",
+            automaticLayout: true,
+            renderOverviewRuler: false,
+            fontSize: 13,
+          }}
+          original={originalValue}
+          modified={modifiedValue}
+          theme="vs-light"
+        />
+      </div>
     </div>
   );
 }

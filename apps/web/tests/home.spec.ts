@@ -70,8 +70,12 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await page.getByRole("link", { name: "Open evidence workspace" }).click();
   await expect(page).toHaveURL(/\/analyses\/.*\/evidence/);
   await expect(page.getByText("Evidence review board")).toBeVisible();
+  await expect(page.getByTestId("evidence-review-grid")).toBeVisible();
+  await expect(page.getByTestId("evidence-left-rail")).toBeVisible();
+  await expect(page.getByTestId("evidence-right-rail")).toBeVisible();
   await expect(page.getByText("Annotation panel")).toBeVisible();
   await expect(page.getByText("Contribution mappings")).toBeVisible();
+  await expect(page.getByTestId("evidence-code-review-shell")).toBeVisible();
   await expect(page.getByText("D1 → C1").first()).toBeVisible();
   await expect(page.getByText("Learning entry point")).toBeVisible();
   await expect(page.getByTestId("monaco-evidence-viewer")).toBeVisible();
