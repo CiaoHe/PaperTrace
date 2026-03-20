@@ -64,6 +64,16 @@ class StaticPaperSourceFetcher:
 
 
 class LLMRepoSuggestionClient:
+    def __init__(self, candidates: list[BaseRepoCandidate] | None = None) -> None:
+        self.candidates = candidates or [
+            BaseRepoCandidate(
+                repo_url="https://github.com/facebookresearch/fairseq",
+                strategy="llm_reasoning",
+                confidence=0.67,
+                evidence="LLM inferred fairseq ancestry from sequence-model training terminology.",
+            )
+        ]
+
     def suggest_base_repos(
         self,
         *,
@@ -74,14 +84,7 @@ class LLMRepoSuggestionClient:
         existing_candidates: list[BaseRepoCandidate],
     ) -> list[BaseRepoCandidate]:
         del request_repo_url, paper_document, readme_text, notes, existing_candidates
-        return [
-            BaseRepoCandidate(
-                repo_url="https://github.com/facebookresearch/fairseq",
-                strategy="llm_reasoning",
-                confidence=0.67,
-                evidence="LLM inferred fairseq ancestry from sequence-model training terminology.",
-            )
-        ]
+        return self.candidates
 
 
 def init_git_repo(root: Path, files: Mapping[str, str], commit_message: str = "seed") -> None:
@@ -753,6 +756,177 @@ def test_repo_tracer_can_add_llm_reasoning_candidates() -> None:
     assert any(
         candidate.repo_url == "https://github.com/facebookresearch/fairseq" for candidate in trace_output.candidates
     )
+
+
+def test_repo_tracer_reranks_candidates_by_lineage_preview(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    target_repo = tmp_path / "target-preview"
+    wrong_repo = tmp_path / "wrong-preview"
+    correct_repo = tmp_path / "correct-preview"
+    init_git_repo(
+        target_repo,
+        {
+            "src/attention_kernel.py": "def attention_kernel(qkv):\n    return qkv + 1\n",
+        },
+    )
+    init_git_repo(
+        wrong_repo,
+        {
+            "vendor/triton_kernel.py": "def launch_kernel(x):\n    return x\n",
+        },
+    )
+    init_git_repo(
+        correct_repo,
+        {
+            "src/attention_kernel.py": "def attention_kernel(qkv):\n    return qkv\n",
+        },
+    )
+
+    class PreviewRepoMetadataProvider:
+        def fetch(self, _: AnalysisRequest) -> RepoMetadataOutput:
+            return RepoMetadataOutput(
+                fork_parent=None,
+                readme_text="Built on top of https://github.com/example/wrong-preview",
+                notes="",
+                warnings=[],
+            )
+
+    tracer = StrategyDrivenRepoTracer(
+        repo_metadata_provider=PreviewRepoMetadataProvider(),
+        repo_mirror=StaticRepoMirror(
+            {
+                "https://github.com/example/target-preview": target_repo,
+                "https://github.com/example/wrong-preview": wrong_repo,
+                "https://github.com/example/correct-preview": correct_repo,
+            }
+        ),
+        settings=repo_settings,
+    )
+    trace_output = tracer.trace(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/9999.00012",
+            repo_url="https://github.com/example/target-preview",
+        ),
+        PaperDocument(
+            source_kind=PaperSourceKind.ARXIV,
+            source_ref="https://arxiv.org/abs/9999.00012",
+            title="Attention Preview",
+            abstract="Attention kernel implementation details.",
+            sections=[],
+            text=("We adapt attention kernel execution from https://github.com/example/correct-preview"),
+        ),
+        [
+            PaperContribution(
+                id="C1",
+                title="Attention kernel",
+                section="Method",
+                keywords=["attention", "kernel"],
+                impl_hints=["Modify the attention kernel."],
+            )
+        ],
+    )
+
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/example/correct-preview"
+    assert "Lineage preview found" in trace_output.selected_base_repo.evidence
+
+
+def test_repo_tracer_uses_llm_rescue_when_preview_has_no_comparable_hunks(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    target_repo = tmp_path / "target-llm-rescue"
+    wrong_repo = tmp_path / "wrong-llm-rescue"
+    rescued_repo = tmp_path / "rescued-llm-rescue"
+    init_git_repo(
+        target_repo,
+        {
+            "src/router.py": "def route(tokens):\n    return rerank(tokens)\n",
+        },
+    )
+    init_git_repo(
+        wrong_repo,
+        {
+            "docs/triton.md": "triton notes\n",
+        },
+    )
+    init_git_repo(
+        rescued_repo,
+        {
+            "src/router.py": "def route(tokens):\n    return tokens\n",
+        },
+    )
+
+    class RescueMetadataProvider:
+        def fetch(self, _: AnalysisRequest) -> RepoMetadataOutput:
+            return RepoMetadataOutput(
+                fork_parent=None,
+                readme_text="Built on top of https://github.com/example/wrong-llm-rescue",
+                notes="",
+                warnings=[],
+            )
+
+    class RescueLLMClient:
+        def suggest_base_repos(
+            self,
+            *,
+            request_repo_url: str,
+            paper_document: PaperDocument,
+            readme_text: str,
+            notes: str,
+            existing_candidates: list[BaseRepoCandidate],
+        ) -> list[BaseRepoCandidate]:
+            del request_repo_url, paper_document, readme_text, existing_candidates
+            if "Lineage preview diagnostics" not in notes:
+                return []
+            return [
+                BaseRepoCandidate(
+                    repo_url="https://github.com/example/rescued-llm-rescue",
+                    strategy="llm_reasoning",
+                    confidence=0.82,
+                    evidence="LLM rescue identified a closer upstream router baseline.",
+                )
+            ]
+
+    tracer = StrategyDrivenRepoTracer(
+        repo_metadata_provider=RescueMetadataProvider(),
+        repo_mirror=StaticRepoMirror(
+            {
+                "https://github.com/example/target-llm-rescue": target_repo,
+                "https://github.com/example/wrong-llm-rescue": wrong_repo,
+                "https://github.com/example/rescued-llm-rescue": rescued_repo,
+            }
+        ),
+        settings=repo_settings,
+        llm_client=cast(Any, RescueLLMClient()),
+    )
+    trace_output = tracer.trace(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/9999.00013",
+            repo_url="https://github.com/example/target-llm-rescue",
+        ),
+        PaperDocument(
+            source_kind=PaperSourceKind.ARXIV,
+            source_ref="https://arxiv.org/abs/9999.00013",
+            title="Router Rescue",
+            abstract="Router rescue.",
+            sections=[],
+            text="Router rescue.",
+        ),
+        [
+            PaperContribution(
+                id="C1",
+                title="Router reranking",
+                section="Method",
+                keywords=["router", "rerank"],
+                impl_hints=["Rerank router outputs."],
+            )
+        ],
+    )
+
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/example/rescued-llm-rescue"
+    assert any("llm ancestry rescue" in warning for warning in trace_output.warnings)
 
 
 def test_repo_tracer_extracts_dependency_archaeology_candidates(

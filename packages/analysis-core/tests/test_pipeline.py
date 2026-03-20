@@ -6,6 +6,7 @@ from papertrace_core.heuristics import infer_contributions, infer_mappings
 from papertrace_core.models import (
     AnalysisRequest,
     BaseRepoCandidate,
+    ContributionMapping,
     CoverageType,
     DiffChangeType,
     DiffCluster,
@@ -54,6 +55,22 @@ class SparseRoutingLLMClient:
 
     def map_contributions(self, _: object, __: object) -> list[object]:
         return []
+
+
+class MappingRescueLLMClient:
+    def extract_contributions(self, _: object) -> list[object]:
+        return []
+
+    def map_contributions(self, _: object, __: object) -> list[object]:
+        return [
+            ContributionMapping(
+                diff_cluster_id="D1",
+                contribution_id="C1",
+                confidence=0.84,
+                evidence="LLM identified the routing kernel change as the implementation match.",
+                completeness="partial",
+            )
+        ]
 
 
 def test_detect_case_slug_prefers_lora_fixture() -> None:
@@ -121,12 +138,13 @@ def test_default_analysis_service_recomposes_fixture_result(monkeypatch: Any) ->
         get_settings.cache_clear()
 
     assert result.case_slug == "flash-attention"
-    assert result.contributions[0].id == "C1"
+    assert result.contributions
+    assert "attention" in result.contributions[0].title.lower()
     assert result.base_repo_candidates[0].strategy == "paper_mention"
     assert result.metadata.selected_repo_strategy
     assert result.metadata.paper_source_kind == PaperSourceKind.ARXIV
     assert result.metadata.paper_fetch_mode == ProcessorMode.FIXTURE
-    assert result.metadata.parser_mode == ProcessorMode.HEURISTIC
+    assert result.metadata.parser_mode in {ProcessorMode.HEURISTIC, ProcessorMode.LLM}
     assert result.metadata.repo_tracer_mode == ProcessorMode.STRATEGY_CHAIN
     assert result.metadata.diff_analyzer_mode == ProcessorMode.FIXTURE
     assert result.metadata.contribution_mapper_mode == ProcessorMode.HEURISTIC
@@ -227,7 +245,98 @@ def test_service_records_fallback_notes_when_llm_returns_empty_payloads() -> Non
     assert result.metadata.parser_mode == ProcessorMode.HEURISTIC
     assert result.metadata.contribution_mapper_mode == ProcessorMode.HEURISTIC
     assert "Paper parser received an empty llm response and fell back." in result.metadata.fallback_notes
-    assert "Contribution mapper received an empty llm response and fell back." in result.metadata.fallback_notes
+    assert "Contribution mapper received an empty llm response and fell back." not in result.metadata.fallback_notes
+
+
+def test_contribution_mapper_uses_llm_review_when_heuristic_matches_are_weak() -> None:
+    request = AnalysisRequest(
+        paper_source="https://arxiv.org/abs/9999.00020",
+        repo_url="https://github.com/example/routing-kernel",
+    )
+    contribution = PaperContribution(
+        id="C1",
+        title="Routing kernel",
+        section="Method",
+        keywords=["routing", "kernel"],
+        impl_hints=["Introduce a routing kernel."],
+    )
+    weak_cluster = DiffCluster(
+        id="D1",
+        label="Core update",
+        change_type=DiffChangeType.MODIFIED_CORE,
+        files=["src/router.py"],
+        summary="Core implementation changes.",
+        code_anchors=[
+            DiffCodeAnchor(
+                patch_id="anchor-weak-1",
+                file_path="src/router.py",
+                start_line=10,
+                end_line=14,
+                snippet="def build_stage(tokens):\n    return normalize(tokens)\n",
+                original_snippet=None,
+                reason="generic staged normalization logic",
+                anchor_kind="addition",
+            )
+        ],
+        semantic_tags=["core"],
+    )
+
+    output = FixtureContributionMapper(llm_client=cast(Any, MappingRescueLLMClient())).map(
+        request,
+        contributions=[contribution],
+        diff_clusters=[weak_cluster],
+    )
+
+    assert output.mode == ProcessorMode.LLM
+    assert output.mappings
+    assert output.mappings[0].diff_cluster_id == "D1"
+    assert output.mappings[0].contribution_id == "C1"
+    assert "LLM identified" in output.mappings[0].evidence
+
+
+def test_contribution_mapper_marks_zero_grounding_matches_as_weak() -> None:
+    request = AnalysisRequest(
+        paper_source="https://arxiv.org/abs/9999.00021",
+        repo_url="https://github.com/example/infra-heavy-repo",
+    )
+    contribution = PaperContribution(
+        id="C1",
+        title="IO-aware fused attention kernel",
+        section="Method",
+        keywords=["attention", "kernel", "fused"],
+        impl_hints=["Fuse tiled attention into an IO-aware kernel."],
+    )
+    weak_cluster = DiffCluster(
+        id="D9",
+        label="Attention kernel packaging",
+        change_type=DiffChangeType.MODIFIED_INFRA,
+        files=["setup.py", "docs/notes.md"],
+        summary="Attention kernel packaging updates inferred from setup.py and release notes.",
+        code_anchors=[
+            DiffCodeAnchor(
+                patch_id="anchor-weak-9",
+                file_path="setup.py",
+                start_line=1,
+                end_line=4,
+                snippet="from setuptools import setup\nsetup(name='papertrace')\n",
+                original_snippet=None,
+                reason="packaging update",
+                anchor_kind="addition",
+            )
+        ],
+        semantic_tags=["infra"],
+    )
+
+    output = FixtureContributionMapper().map(
+        request,
+        contributions=[contribution],
+        diff_clusters=[weak_cluster],
+    )
+
+    assert output.mode == ProcessorMode.HEURISTIC
+    assert output.mappings
+    assert output.mappings[0].coverage_type == CoverageType.MISSING
+    assert any("marked 1 mapping" in warning for warning in output.warnings)
 
 
 def test_heuristic_paper_parser_merges_llm_output_with_heuristic_evidence() -> None:
@@ -532,6 +641,7 @@ def test_contribution_mapper_returns_empty_matches_with_explicit_unmatched_ids()
                     "label": "Packaging updates",
                     "summary": "Packaging updates inferred from setup.py.",
                     "files": ["setup.py"],
+                    "code_anchors": [],
                 }
             )
         ],

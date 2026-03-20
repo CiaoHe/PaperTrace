@@ -21,9 +21,15 @@ from papertrace_core.heuristics import (
     collect_unmatched_ids,
     infer_document_contributions,
     infer_mappings,
+    is_comparable_code_anchor,
+    is_weak_mapping,
     merge_contribution_sets,
+    order_cluster_files_for_review,
     parser_gap_warnings,
+    select_learning_entry_point,
     tokenize,
+    trace_contribution_anchors,
+    trace_contribution_steps,
 )
 from papertrace_core.inputs import detect_paper_source_kind, extract_arxiv_id, normalize_repo_url
 from papertrace_core.interfaces import (
@@ -46,6 +52,8 @@ from papertrace_core.models import (
     AnalysisResult,
     AnalysisRuntimeMetadata,
     BaseRepoCandidate,
+    ContributionMapping,
+    CoverageType,
     DiffChangeType,
     DiffCluster,
     DiffCodeAnchor,
@@ -192,6 +200,27 @@ class ClusterState:
     parent_dir: str
     rationales: list[str]
     link_reasons: list[str]
+
+
+@dataclass(frozen=True)
+class CandidateDiffPreview:
+    repo_url: str
+    comparable_anchor_count: int
+    comparable_file_count: int
+    raw_anchor_count: int
+    changed_file_count: int
+    modified_file_count: int
+    new_file_count: int
+
+    @property
+    def score(self) -> tuple[int, int, int, int, int]:
+        return (
+            self.comparable_anchor_count,
+            self.comparable_file_count,
+            self.modified_file_count,
+            self.raw_anchor_count,
+            -self.new_file_count,
+        )
 
 
 FRAMEWORK_SIGNATURES: dict[str, FrameworkSignature] = {
@@ -494,6 +523,8 @@ def build_file_code_anchors(
     contributions: list[PaperContribution],
     rationale: str,
 ) -> list[DiffCodeAnchor]:
+    context_radius = 3
+    max_lines = 24
     base_lines = (base_content or "").splitlines()
     target_lines = target_content.splitlines()
     matcher = difflib.SequenceMatcher(a=base_lines, b=target_lines)
@@ -501,21 +532,25 @@ def build_file_code_anchors(
     for opcode, i1, i2, j1, j2 in matcher.get_opcodes():
         if opcode == "equal":
             continue
-        snippet_lines = target_lines[j1:j2]
-        original_lines = base_lines[i1:i2]
-        selected_lines = snippet_lines if snippet_lines else original_lines
-        if not selected_lines:
+        if opcode == "delete":
             continue
-        snippet = "\n".join(selected_lines[:8]).strip()
-        original_snippet = "\n".join(original_lines[:8]).strip() or None
+        target_start = max(j1 - context_radius, 0)
+        target_end = min(j2 + context_radius, len(target_lines))
+        base_start = max(i1 - context_radius, 0)
+        base_window_end = i2 if i2 > i1 else i1
+        base_end = min(base_window_end + context_radius, len(base_lines))
+        target_window = target_lines[target_start:target_end][:max_lines]
+        base_window = base_lines[base_start:base_end][:max_lines]
+        snippet = "\n".join(target_window).strip()
+        original_snippet = "\n".join(base_window).strip() or None
         if not snippet:
             continue
-        start_line = j1 + 1 if j1 != j2 else i1 + 1
-        end_line = start_line + max(len(selected_lines) - 1, 0)
-        original_start_line = i1 + 1 if original_lines else None
-        original_end_line = (
-            original_start_line + max(len(original_lines) - 1, 0) if original_start_line is not None else None
-        )
+        if original_snippet and snippet == original_snippet:
+            continue
+        start_line = target_start + 1
+        end_line = target_start + len(target_window)
+        original_start_line = base_start + 1 if original_snippet else None
+        original_end_line = base_start + len(base_window) if original_snippet else None
         anchors.append(
             DiffCodeAnchor(
                 patch_id=stable_patch_id(
@@ -705,6 +740,145 @@ def dedupe_repo_candidates(candidates: list[BaseRepoCandidate]) -> list[BaseRepo
     for candidate in sort_repo_candidates(candidates):
         by_repo_url.setdefault(candidate.repo_url, candidate)
     return sort_repo_candidates(list(by_repo_url.values()))
+
+
+def format_candidate_preview(preview: CandidateDiffPreview) -> str:
+    return (
+        "Lineage preview found "
+        f"{preview.comparable_anchor_count} comparable hunks across {preview.comparable_file_count} overlapping files; "
+        f"{preview.changed_file_count} changed files total ({preview.modified_file_count} modified, "
+        f"{preview.new_file_count} new-only)."
+    )
+
+
+def preview_repo_candidate_diff(
+    request: AnalysisRequest,
+    candidate: BaseRepoCandidate,
+    repo_mirror: RepoMirror | None,
+    settings: Settings | None,
+    contributions: list[PaperContribution],
+) -> tuple[CandidateDiffPreview | None, str | None]:
+    if repo_mirror is None or settings is None:
+        return None, None
+
+    try:
+        target_root = repo_mirror.prepare(request.repo_url)
+        base_root = repo_mirror.prepare(candidate.repo_url)
+        target_snapshot = load_repo_snapshot(target_root, settings)
+        base_snapshot = load_repo_snapshot(base_root, settings)
+    except (RepoAccessError, KeyError) as exc:
+        return None, f"Repo tracer skipped lineage preview for {candidate.repo_url}: {exc}"
+
+    comparable_anchor_total = 0
+    comparable_file_total = 0
+    raw_anchor_total = 0
+    changed_file_total = 0
+    modified_file_total = 0
+    new_file_total = 0
+    for relative_path, content in target_snapshot.items():
+        base_content = base_snapshot.get(relative_path)
+        if base_content == content:
+            continue
+        changed_file_total += 1
+        if base_content is None:
+            new_file_total += 1
+        else:
+            modified_file_total += 1
+        anchors = build_file_code_anchors(
+            relative_path,
+            base_content,
+            content,
+            extract_semantic_tags(relative_path, content, contributions),
+            contributions,
+            "lineage preview",
+        )
+        raw_anchor_total += len(anchors)
+        comparable_anchors = [anchor for anchor in anchors if is_comparable_code_anchor(anchor)]
+        if comparable_anchors:
+            comparable_file_total += 1
+            comparable_anchor_total += len(comparable_anchors)
+
+    return (
+        CandidateDiffPreview(
+            repo_url=candidate.repo_url,
+            comparable_anchor_count=comparable_anchor_total,
+            comparable_file_count=comparable_file_total,
+            raw_anchor_count=raw_anchor_total,
+            changed_file_count=changed_file_total,
+            modified_file_count=modified_file_total,
+            new_file_count=new_file_total,
+        ),
+        None,
+    )
+
+
+def rerank_repo_candidates_with_preview(
+    request: AnalysisRequest,
+    candidates: list[BaseRepoCandidate],
+    repo_mirror: RepoMirror | None,
+    settings: Settings | None,
+    contributions: list[PaperContribution],
+) -> tuple[list[BaseRepoCandidate], dict[str, CandidateDiffPreview], list[str]]:
+    if repo_mirror is None or settings is None or not candidates:
+        return candidates, {}, []
+
+    preview_warnings: list[str] = []
+    preview_by_repo_url: dict[str, CandidateDiffPreview] = {}
+    top_k = max(min(getattr(settings, "repo_lineage_preview_top_k", 4), len(candidates)), 0)
+    preview_candidates = candidates[:top_k]
+    preview_candidates.extend(candidate for candidate in candidates if candidate.strategy == "llm_reasoning")
+    seen_repo_urls: set[str] = set()
+    for candidate in preview_candidates:
+        if candidate.repo_url in seen_repo_urls:
+            continue
+        seen_repo_urls.add(candidate.repo_url)
+        preview, warning = preview_repo_candidate_diff(
+            request,
+            candidate,
+            repo_mirror,
+            settings,
+            contributions,
+        )
+        if warning:
+            preview_warnings.append(warning)
+        if preview is None:
+            continue
+        preview_by_repo_url[candidate.repo_url] = preview
+
+    def candidate_sort_key(candidate: BaseRepoCandidate) -> tuple[int, int, int, int, int, int, int, float, str]:
+        preview = preview_by_repo_url.get(candidate.repo_url)
+        if preview is None:
+            return (
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                STRATEGY_PRIORITY.get(candidate.strategy, 0),
+                candidate.confidence,
+                candidate.repo_url,
+            )
+        comparable_selected = int(preview.comparable_anchor_count > 0)
+        return (
+            comparable_selected,
+            *preview.score,
+            STRATEGY_PRIORITY.get(candidate.strategy, 0),
+            candidate.confidence,
+            candidate.repo_url,
+        )
+
+    reranked = sorted(candidates, key=candidate_sort_key, reverse=True)
+    updated_candidates: list[BaseRepoCandidate] = []
+    for candidate in reranked:
+        preview = preview_by_repo_url.get(candidate.repo_url)
+        if preview is None:
+            updated_candidates.append(candidate)
+            continue
+        updated_candidates.append(
+            candidate.model_copy(update={"evidence": f"{candidate.evidence} {format_candidate_preview(preview)}"})
+        )
+    return updated_candidates, preview_by_repo_url, preview_warnings
 
 
 def unique_repo_urls(repo_urls: list[str]) -> list[str]:
@@ -1912,6 +2086,60 @@ class StrategyDrivenRepoTracer:
             )
 
         deduped = dedupe_repo_candidates(candidates)
+        deduped, preview_by_repo_url, preview_warnings = rerank_repo_candidates_with_preview(
+            request,
+            deduped,
+            self.repo_mirror,
+            self.settings,
+            contributions,
+        )
+        warnings.extend(preview_warnings)
+        selected_preview = preview_by_repo_url.get(deduped[0].repo_url) if deduped else None
+        if (
+            deduped
+            and selected_preview is not None
+            and selected_preview.comparable_anchor_count == 0
+            and self.llm_client is not None
+        ):
+            preview_diagnostics = "\n".join(
+                f"- {candidate.repo_url}: {format_candidate_preview(preview_by_repo_url[candidate.repo_url])}"
+                for candidate in deduped
+                if candidate.repo_url in preview_by_repo_url
+            )
+            try:
+                llm_rescue_candidates = self.llm_client.suggest_base_repos(
+                    request_repo_url=request.repo_url,
+                    paper_document=paper_document,
+                    readme_text=metadata_output.readme_text,
+                    notes=(
+                        f"{metadata_output.notes}\n"
+                        "Lineage preview diagnostics for current top ancestry candidates:\n"
+                        f"{preview_diagnostics}"
+                    ),
+                    existing_candidates=deduped[:8],
+                )
+                if llm_rescue_candidates:
+                    deduped = dedupe_repo_candidates([*deduped, *llm_rescue_candidates])
+                    deduped, preview_by_repo_url, preview_warnings = rerank_repo_candidates_with_preview(
+                        request,
+                        deduped,
+                        self.repo_mirror,
+                        self.settings,
+                        contributions,
+                    )
+                    warnings.extend(preview_warnings)
+                    warnings.append(
+                        "Repo tracer invoked llm ancestry rescue because the initial selected "
+                        "base repo produced no comparable hunks."
+                    )
+            except Exception:
+                warnings.append("Repo tracer skipped llm ancestry rescue after zero-comparable lineage preview.")
+        selected_preview = preview_by_repo_url.get(deduped[0].repo_url) if deduped else None
+        if selected_preview is not None and selected_preview.comparable_anchor_count == 0:
+            warnings.append(
+                f"Selected base repo {deduped[0].repo_url} produced no comparable hunks during lineage preview; "
+                "evidence review will be limited to weak or addition-only matches."
+            )
         if progress is not None:
             progress(
                 JobStage.ANCESTRY_TRACE,
@@ -2120,32 +2348,169 @@ class FixtureContributionMapper:
         progress: StageProgressCallback | None = None,
     ) -> MappingOutput:
         warnings: list[str] = []
+        contribution_by_id = {contribution.id: contribution for contribution in contributions}
+        diff_cluster_by_id = {diff_cluster.id: diff_cluster for diff_cluster in diff_clusters}
         if progress is not None:
             progress(JobStage.CONTRIBUTION_MAP, 0.1, "Preparing contribution-to-diff alignment.")
-        if self.llm_client is not None:
+        if progress is not None:
+            progress(JobStage.CONTRIBUTION_MAP, 0.45, "Running heuristic contribution mapping.")
+        heuristic_mappings = infer_mappings(contributions, diff_clusters)
+        normalized_heuristic_mappings: list[ContributionMapping] = []
+        weak_heuristic_mappings: list[ContributionMapping] = []
+        for mapping in heuristic_mappings:
+            diff_cluster = diff_cluster_by_id.get(mapping.diff_cluster_id)
+            if diff_cluster is None or not is_weak_mapping(mapping, diff_cluster):
+                normalized_heuristic_mappings.append(mapping)
+                continue
+            if not diff_cluster.code_anchors:
+                warnings.append(
+                    f"Contribution mapper dropped weak mapping {mapping.diff_cluster_id}->{mapping.contribution_id} "
+                    "because the diff cluster exposed no code anchors."
+                )
+                continue
+            if diff_cluster.code_anchors and not any(
+                anchor.file_path in set(diff_cluster.files) for anchor in diff_cluster.code_anchors
+            ):
+                warnings.append(
+                    f"Contribution mapper dropped weak mapping {mapping.diff_cluster_id}->{mapping.contribution_id} "
+                    "because its code anchors no longer matched the diff cluster file set."
+                )
+                continue
+            weak_mapping = mapping.model_copy(
+                update={
+                    "coverage_type": CoverageType.MISSING,
+                    "completeness": "missing",
+                    "implementation_coverage": min(mapping.implementation_coverage, 0.1),
+                    "evidence": (
+                        f"{mapping.evidence} "
+                        "This match is currently weak because no source-comparable hunks or "
+                        "strongly grounded anchors were found."
+                    ),
+                }
+            )
+            normalized_heuristic_mappings.append(weak_mapping)
+            weak_heuristic_mappings.append(weak_mapping)
+        mappings = normalized_heuristic_mappings
+        mode = ProcessorMode.HEURISTIC
+        if weak_heuristic_mappings:
+            warnings.append(
+                f"Contribution mapper marked {len(weak_heuristic_mappings)} mapping(s) as weak because they lacked "
+                "comparable hunks and strong anchor grounding."
+            )
+
+        if self.llm_client is not None and (
+            not heuristic_mappings or len(weak_heuristic_mappings) == len(heuristic_mappings)
+        ):
             try:
                 if progress is not None:
-                    progress(JobStage.CONTRIBUTION_MAP, 0.4, "Requesting LLM contribution mapping review.")
+                    progress(JobStage.CONTRIBUTION_MAP, 0.72, "Requesting LLM contribution mapping review.")
                 llm_mappings = self.llm_client.map_contributions(contributions, diff_clusters)
                 if llm_mappings:
-                    unmatched_contribution_ids, unmatched_diff_cluster_ids = collect_unmatched_ids(
-                        contributions,
-                        diff_clusters,
-                        llm_mappings,
-                    )
-                    return MappingOutput(
-                        mappings=llm_mappings,
-                        unmatched_contribution_ids=unmatched_contribution_ids,
-                        unmatched_diff_cluster_ids=unmatched_diff_cluster_ids,
-                        mode=ProcessorMode.LLM,
-                        warnings=[],
-                    )
-                warnings.append("Contribution mapper received an empty llm response and fell back.")
+                    heuristic_by_pair = {
+                        (mapping.diff_cluster_id, mapping.contribution_id): mapping for mapping in heuristic_mappings
+                    }
+                    enriched_llm_mappings: list[ContributionMapping] = []
+                    for llm_mapping in llm_mappings:
+                        contribution = contribution_by_id.get(llm_mapping.contribution_id)
+                        diff_cluster = diff_cluster_by_id.get(llm_mapping.diff_cluster_id)
+                        if contribution is None or diff_cluster is None:
+                            continue
+                        heuristic_mapping = heuristic_by_pair.get(
+                            (llm_mapping.diff_cluster_id, llm_mapping.contribution_id)
+                        )
+                        supported_steps, missing_steps = trace_contribution_steps(contribution, diff_cluster)
+                        matched_anchors, fidelity_notes, snippet_fidelity, formula_fidelity = (
+                            trace_contribution_anchors(
+                                contribution,
+                                diff_cluster,
+                            )
+                        )
+                        enriched_llm_mappings.append(
+                            llm_mapping.model_copy(
+                                update={
+                                    "implementation_coverage": (
+                                        max(
+                                            llm_mapping.implementation_coverage,
+                                            heuristic_mapping.implementation_coverage,
+                                        )
+                                        if heuristic_mapping is not None
+                                        else llm_mapping.implementation_coverage
+                                    ),
+                                    "snippet_fidelity": (
+                                        max(llm_mapping.snippet_fidelity, snippet_fidelity)
+                                        if llm_mapping.snippet_fidelity
+                                        else snippet_fidelity
+                                    ),
+                                    "formula_fidelity": (
+                                        max(llm_mapping.formula_fidelity, formula_fidelity)
+                                        if llm_mapping.formula_fidelity
+                                        else formula_fidelity
+                                    ),
+                                    "coverage_type": (
+                                        heuristic_mapping.coverage_type
+                                        if heuristic_mapping is not None
+                                        else llm_mapping.coverage_type
+                                    ),
+                                    "missing_aspects": (
+                                        heuristic_mapping.missing_aspects
+                                        if heuristic_mapping is not None
+                                        else (
+                                            [f"untraced implementation steps: {', '.join(missing_steps[:2])}"]
+                                            if missing_steps
+                                            else []
+                                        )
+                                    ),
+                                    "engineering_divergences": (
+                                        heuristic_mapping.engineering_divergences
+                                        if heuristic_mapping is not None
+                                        else []
+                                    ),
+                                    "fidelity_notes": (
+                                        heuristic_mapping.fidelity_notes
+                                        if heuristic_mapping is not None
+                                        else fidelity_notes
+                                    ),
+                                    "matched_anchor_patch_ids": [
+                                        anchor.patch_id for anchor in matched_anchors if anchor.patch_id
+                                    ],
+                                    "learning_entry_point": select_learning_entry_point(contribution, diff_cluster),
+                                    "reading_order": order_cluster_files_for_review(contribution, diff_cluster),
+                                    "confidence": max(
+                                        llm_mapping.confidence,
+                                        heuristic_mapping.confidence if heuristic_mapping is not None else 0.0,
+                                    ),
+                                    "evidence": (
+                                        f"{llm_mapping.evidence} Grounding: {heuristic_mapping.evidence}"
+                                        if heuristic_mapping is not None
+                                        else llm_mapping.evidence
+                                    ),
+                                }
+                            )
+                        )
+                    weak_llm_mappings = [
+                        mapping
+                        for mapping in enriched_llm_mappings
+                        if (cluster := diff_cluster_by_id.get(mapping.diff_cluster_id)) is not None
+                        and is_weak_mapping(mapping, cluster)
+                    ]
+                    if enriched_llm_mappings and len(weak_llm_mappings) < len(enriched_llm_mappings):
+                        mappings = enriched_llm_mappings
+                        mode = ProcessorMode.LLM
+                    elif enriched_llm_mappings and len(weak_llm_mappings) <= len(weak_heuristic_mappings):
+                        mappings = enriched_llm_mappings
+                        mode = ProcessorMode.LLM
+                    elif not heuristic_mappings and enriched_llm_mappings:
+                        mappings = enriched_llm_mappings
+                        mode = ProcessorMode.LLM
+                    else:
+                        warnings.append(
+                            "Contribution mapper kept heuristic output because llm review did not improve grounding."
+                        )
+                else:
+                    warnings.append("Contribution mapper received an empty llm response and fell back.")
             except Exception:
-                warnings.append("Contribution mapper fell back from llm to heuristic matching.")
-        if progress is not None:
-            progress(JobStage.CONTRIBUTION_MAP, 0.75, "Running heuristic contribution mapping.")
-        mappings = infer_mappings(contributions, diff_clusters)
+                warnings.append("Contribution mapper fell back from llm review to heuristic matching.")
+
         unmatched_contribution_ids, unmatched_diff_cluster_ids = collect_unmatched_ids(
             contributions,
             diff_clusters,
@@ -2166,7 +2531,7 @@ class FixtureContributionMapper:
             mappings=mappings,
             unmatched_contribution_ids=unmatched_contribution_ids,
             unmatched_diff_cluster_ids=unmatched_diff_cluster_ids,
-            mode=ProcessorMode.HEURISTIC,
+            mode=mode,
             warnings=warnings,
         )
 
@@ -2262,6 +2627,7 @@ def build_default_analysis_service() -> AnalysisService:
     diff_analyzer: DiffAnalyzer
     repo_tracer_provider: RepoMetadataProvider
     repo_mirror: RepoMirror | None = None
+    repo_tracer_settings: Settings | None = settings if settings.use_live_repo_trace() else None
     if settings.use_live_paper_fetch():
         paper_source_fetcher = ChainedPaperSourceFetcher(
             primary=SourceAwarePaperSourceFetcher(
@@ -2294,7 +2660,7 @@ def build_default_analysis_service() -> AnalysisService:
         repo_tracer=StrategyDrivenRepoTracer(
             repo_metadata_provider=repo_tracer_provider,
             repo_mirror=repo_mirror,
-            settings=settings,
+            settings=repo_tracer_settings,
             llm_client=llm_client,
         ),
         diff_analyzer=diff_analyzer,

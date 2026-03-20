@@ -4,7 +4,14 @@ import type { AnalysisResult } from "@papertrace/contracts";
 import Link from "next/link";
 
 import { AnalysisLineageGraph } from "@/components/analysis-lineage-graph";
-import { buildCoverageBuckets, formatEnumLabel, readOptionalStringArray } from "@/lib/analysis-workbench";
+import {
+  buildCoverageBuckets,
+  countComparableAnchors,
+  findCluster,
+  formatEnumLabel,
+  isWeakMapping,
+  readOptionalStringArray,
+} from "@/lib/analysis-workbench";
 
 interface AnalysisResultsWorkbenchProps {
   jobId: string | null;
@@ -17,6 +24,15 @@ export function AnalysisResultsWorkbench({ jobId, result, submittedRepoUrl }: An
   const unmatchedContributionIds = readOptionalStringArray(result, "unmatched_contribution_ids");
   const unmatchedDiffClusterIds = readOptionalStringArray(result, "unmatched_diff_cluster_ids");
   const leadMapping = result.mappings[0] ?? null;
+  const reviewableMappingCount = result.mappings.filter(
+    (mapping) => countComparableAnchors(findCluster(result, mapping.diff_cluster_id)) > 0,
+  ).length;
+  const weakMappingCount = result.mappings.filter((mapping) =>
+    isWeakMapping(mapping, findCluster(result, mapping.diff_cluster_id)),
+  ).length;
+  const lineageWarning = result.metadata.fallback_notes.find((note) =>
+    note.includes("no comparable hunks during lineage preview"),
+  );
 
   return (
     <div className="stack">
@@ -61,6 +77,13 @@ export function AnalysisResultsWorkbench({ jobId, result, submittedRepoUrl }: An
               ))}
             </div>
           </div>
+          {lineageWarning ? <div className="warning">{lineageWarning}</div> : null}
+          {reviewableMappingCount === 0 && result.mappings.length > 0 ? (
+            <div className="warning">
+              Review mode is currently degraded: {weakMappingCount} weak mapping hypothesis
+              {weakMappingCount === 1 ? "" : "es"} and 0 source-comparable mapped changes.
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -88,7 +111,7 @@ export function AnalysisResultsWorkbench({ jobId, result, submittedRepoUrl }: An
               </h4>
               <p>
                 {leadMapping
-                  ? `${leadMapping.coverage_type} · implementation coverage ${leadMapping.implementation_coverage.toFixed(2)}`
+                  ? `${leadMapping.coverage_type} · implementation coverage ${leadMapping.implementation_coverage.toFixed(2)} · ${reviewableMappingCount} reviewable`
                   : "Open the evidence workspace after the first confident mapping lands."}
               </p>
             </div>

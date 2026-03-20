@@ -2,10 +2,11 @@
 
 import type { AnalysisResult } from "@papertrace/contracts";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { AnalysisEvidencePanel } from "@/components/analysis-evidence-panel";
 import {
+  countComparableAnchors,
   defaultFocus,
   findCluster,
   findContribution,
@@ -13,6 +14,7 @@ import {
   focusCluster,
   focusContribution,
   formatEnumLabel,
+  isWeakMapping,
   mappingKey,
   type WorkbenchFocus,
 } from "@/lib/analysis-workbench";
@@ -25,21 +27,58 @@ interface AnalysisEvidenceWorkspaceProps {
 
 export function AnalysisEvidenceWorkspace({ jobId, result, submittedRepoUrl }: AnalysisEvidenceWorkspaceProps) {
   const [focus, setFocus] = useState<WorkbenchFocus>(() => defaultFocus(result));
-  const prioritizedMappings = [...result.mappings].sort((left, right) => {
-    const leftAnchors = findCluster(result, left.diff_cluster_id)?.code_anchors?.length ?? 0;
-    const rightAnchors = findCluster(result, right.diff_cluster_id)?.code_anchors?.length ?? 0;
-    if (leftAnchors !== rightAnchors) {
-      return rightAnchors - leftAnchors;
-    }
-    if (left.implementation_coverage !== right.implementation_coverage) {
-      return right.implementation_coverage - left.implementation_coverage;
-    }
-    return right.confidence - left.confidence;
-  });
+  const prioritizedMappings = useMemo(
+    () =>
+      [...result.mappings].sort((left, right) => {
+        const leftComparableAnchors = countComparableAnchors(findCluster(result, left.diff_cluster_id));
+        const rightComparableAnchors = countComparableAnchors(findCluster(result, right.diff_cluster_id));
+        if (leftComparableAnchors !== rightComparableAnchors) {
+          return rightComparableAnchors - leftComparableAnchors;
+        }
+        const leftAnchors = findCluster(result, left.diff_cluster_id)?.code_anchors?.length ?? 0;
+        const rightAnchors = findCluster(result, right.diff_cluster_id)?.code_anchors?.length ?? 0;
+        if (leftAnchors !== rightAnchors) {
+          return rightAnchors - leftAnchors;
+        }
+        if (left.implementation_coverage !== right.implementation_coverage) {
+          return right.implementation_coverage - left.implementation_coverage;
+        }
+        return right.confidence - left.confidence;
+      }),
+    [result],
+  );
+  const reviewableMappings = useMemo(
+    () =>
+      prioritizedMappings.filter((mapping) => countComparableAnchors(findCluster(result, mapping.diff_cluster_id)) > 0),
+    [prioritizedMappings, result],
+  );
+  const weakMappings = useMemo(
+    () => prioritizedMappings.filter((mapping) => isWeakMapping(mapping, findCluster(result, mapping.diff_cluster_id))),
+    [prioritizedMappings, result],
+  );
+  const omittedMappingCount = prioritizedMappings.length - reviewableMappings.length;
+  const lineageWarning = result.metadata.fallback_notes.find((note) =>
+    note.includes("no comparable hunks during lineage preview"),
+  );
 
   useEffect(() => {
     setFocus(defaultFocus(result));
   }, [result]);
+
+  useEffect(() => {
+    if (reviewableMappings.length === 0) {
+      return;
+    }
+    if (focus.mappingKey && reviewableMappings.some((mapping) => mappingKey(mapping) === focus.mappingKey)) {
+      return;
+    }
+    const nextMapping = reviewableMappings[0];
+    setFocus({
+      mappingKey: mappingKey(nextMapping),
+      contributionId: nextMapping.contribution_id,
+      clusterId: nextMapping.diff_cluster_id,
+    });
+  }, [focus.mappingKey, reviewableMappings]);
 
   const activeMapping = findMapping(result, focus.mappingKey);
   const activeContribution = findContribution(result, focus.contributionId);
@@ -95,6 +134,7 @@ export function AnalysisEvidenceWorkspace({ jobId, result, submittedRepoUrl }: A
               </span>
             </div>
           </div>
+          {lineageWarning ? <div className="warning">{lineageWarning}</div> : null}
         </div>
       </div>
 
@@ -109,12 +149,13 @@ export function AnalysisEvidenceWorkspace({ jobId, result, submittedRepoUrl }: A
           </div>
         </div>
         <div className="mapping-lane" data-testid="mapping-lane">
-          {prioritizedMappings.length > 0 ? (
-            prioritizedMappings.map((mapping) => {
+          {reviewableMappings.length > 0 ? (
+            reviewableMappings.map((mapping) => {
               const isActive = mappingKey(mapping) === focus.mappingKey;
               const contribution = findContribution(result, mapping.contribution_id);
               const cluster = findCluster(result, mapping.diff_cluster_id);
               const anchorCount = cluster?.code_anchors?.length ?? 0;
+              const comparableCount = countComparableAnchors(cluster);
               return (
                 <button
                   className={`trace-card trace-button${isActive ? " active" : ""}`}
@@ -135,23 +176,73 @@ export function AnalysisEvidenceWorkspace({ jobId, result, submittedRepoUrl }: A
                         {cluster?.id ?? mapping.diff_cluster_id} → {contribution?.id ?? mapping.contribution_id}
                       </h4>
                     </div>
-                    <strong>{anchorCount} anchors</strong>
+                    <strong>{comparableCount} comparable</strong>
                   </div>
                   <div className="coverage-meter" aria-hidden="true">
                     <span style={{ width: `${Math.round(mapping.implementation_coverage * 100)}%` }} />
                   </div>
                   <p>
                     {contribution?.title ?? mapping.contribution_id} · coverage{" "}
-                    {mapping.implementation_coverage.toFixed(2)}
+                    {mapping.implementation_coverage.toFixed(2)} · {anchorCount} raw anchors
                   </p>
                 </button>
               );
             })
+          ) : prioritizedMappings.length > 0 ? (
+            <p className="muted">
+              No source-to-current comparable mapping bundles are available for review mode yet. All{" "}
+              {prioritizedMappings.length} discovered mappings were omitted because they only contain additions or
+              unmatched files.
+            </p>
           ) : (
             <p className="muted">No contribution mappings are available for this analysis yet.</p>
           )}
         </div>
+        {reviewableMappings.length > 0 && omittedMappingCount > 0 ? (
+          <p className="muted">
+            Omitted {omittedMappingCount} mapping bundle{omittedMappingCount === 1 ? "" : "s"} from review mode because
+            they do not have source-to-current comparable hunks.
+          </p>
+        ) : null}
       </div>
+
+      {weakMappings.length > 0 ? (
+        <div className="workbench-card">
+          <div className="section-head">
+            <div>
+              <h4>Weak mapping hypotheses</h4>
+              <p className="muted">
+                These alignments are still visible for debugging, but they are excluded from the main review lane
+                because they lack comparable hunks or strong snippet grounding.
+              </p>
+            </div>
+          </div>
+          <div className="mapping-lane">
+            {weakMappings.map((mapping) => {
+              const contribution = findContribution(result, mapping.contribution_id);
+              const cluster = findCluster(result, mapping.diff_cluster_id);
+              return (
+                <div className="trace-card" key={`weak-${mappingKey(mapping)}`}>
+                  <div className="trace-head">
+                    <div>
+                      <small>{mapping.coverage_type}</small>
+                      <h4>
+                        {cluster?.id ?? mapping.diff_cluster_id} → {contribution?.id ?? mapping.contribution_id}
+                      </h4>
+                    </div>
+                    <strong>weak</strong>
+                  </div>
+                  <p>
+                    {contribution?.title ?? mapping.contribution_id} · coverage{" "}
+                    {mapping.implementation_coverage.toFixed(2)} · {countComparableAnchors(cluster)} comparable
+                  </p>
+                  <p className="muted">{mapping.evidence}</p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       <AnalysisEvidencePanel
         contribution={activeContribution}

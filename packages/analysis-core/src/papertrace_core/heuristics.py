@@ -833,6 +833,30 @@ def anchor_review_tokens(anchor: DiffCodeAnchor) -> set[str]:
     )
 
 
+def is_comparable_code_anchor(anchor: DiffCodeAnchor) -> bool:
+    original = (anchor.original_snippet or "").strip()
+    current = anchor.snippet.strip()
+    return bool(original) and bool(current) and original != current
+
+
+def comparable_anchor_count(diff_cluster: DiffCluster) -> int:
+    return sum(1 for anchor in diff_cluster.code_anchors if is_comparable_code_anchor(anchor))
+
+
+def is_weak_mapping(mapping: ContributionMapping, diff_cluster: DiffCluster) -> bool:
+    if comparable_anchor_count(diff_cluster) > 0:
+        return False
+    if not mapping.matched_anchor_patch_ids and mapping.snippet_fidelity <= 0.0 and mapping.formula_fidelity <= 0.0:
+        return True
+    if mapping.implementation_coverage >= 0.25:
+        return False
+    if mapping.snippet_fidelity >= 0.2 or mapping.formula_fidelity >= 0.2:
+        return False
+    if mapping.matched_anchor_patch_ids:
+        return False
+    return True
+
+
 def safe_code_tokens(snippet: str) -> set[str]:
     try:
         tree = ast.parse(snippet)
@@ -920,10 +944,15 @@ def trace_contribution_anchors(
     if not diff_cluster.code_anchors:
         return [], ["diff cluster does not expose code anchors"], 0.0, 0.0
 
+    cluster_file_set = set(diff_cluster.files)
+    relevant_anchors = [anchor for anchor in diff_cluster.code_anchors if anchor.file_path in cluster_file_set]
+    if not relevant_anchors:
+        return [], ["diff cluster code anchors did not match the current file set"], 0.0, 0.0
+
     contribution_tokens = tokenize(contribution.title) | set(contribution.keywords)
     algorithmic_markers = extract_algorithmic_markers(contribution)
     matched: list[tuple[int, DiffCodeAnchor]] = []
-    for anchor in diff_cluster.code_anchors:
+    for anchor in relevant_anchors:
         anchor_tokens = anchor_review_tokens(anchor)
         keyword_overlap = len(contribution_tokens & anchor_tokens)
         algorithm_overlap = len(algorithmic_markers & anchor_tokens)

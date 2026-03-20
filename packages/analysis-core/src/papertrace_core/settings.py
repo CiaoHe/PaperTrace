@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     repo_clone_timeout_seconds: float = Field(default=45.0, alias="REPO_CLONE_TIMEOUT_SECONDS")
     repo_max_file_size_bytes: int = Field(default=200_000, alias="REPO_MAX_FILE_SIZE_BYTES")
     repo_max_files: int = Field(default=200, alias="REPO_MAX_FILES")
+    repo_lineage_preview_top_k: int = Field(default=4, alias="REPO_LINEAGE_PREVIEW_TOP_K")
     repo_analysis_exclude_dirs: tuple[str, ...] = Field(
         default=("docs", "doc", "examples", "notebooks", "assets", ".github"),
         alias="REPO_ANALYSIS_EXCLUDE_DIRS",

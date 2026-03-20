@@ -14,13 +14,47 @@ export function mappingKey(mapping: ContributionMapping): string {
   return `${mapping.diff_cluster_id}:${mapping.contribution_id}`;
 }
 
+export function isComparableAnchor(anchor: { original_snippet?: string | null; snippet: string }): boolean {
+  const original = anchor.original_snippet?.trim() ?? "";
+  const current = anchor.snippet.trim();
+  return Boolean(original) && Boolean(current) && original !== current;
+}
+
 function countAnchors(cluster: DiffCluster | null): number {
   return cluster?.code_anchors?.length ?? 0;
+}
+
+export function countComparableAnchors(cluster: DiffCluster | null): number {
+  return cluster?.code_anchors?.filter((anchor) => isComparableAnchor(anchor)).length ?? 0;
+}
+
+export function isWeakMapping(
+  mapping: Pick<
+    ContributionMapping,
+    "implementation_coverage" | "snippet_fidelity" | "formula_fidelity" | "matched_anchor_patch_ids"
+  >,
+  cluster: DiffCluster | null,
+): boolean {
+  if (countComparableAnchors(cluster) > 0) {
+    return false;
+  }
+  if (mapping.implementation_coverage >= 0.25) {
+    return false;
+  }
+  if (mapping.snippet_fidelity >= 0.2 || mapping.formula_fidelity >= 0.2) {
+    return false;
+  }
+  return (mapping.matched_anchor_patch_ids?.length ?? 0) === 0;
 }
 
 function compareMappingPriority(result: AnalysisResult, left: ContributionMapping, right: ContributionMapping): number {
   const leftCluster = findCluster(result, left.diff_cluster_id);
   const rightCluster = findCluster(result, right.diff_cluster_id);
+  const leftComparableAnchors = countComparableAnchors(leftCluster);
+  const rightComparableAnchors = countComparableAnchors(rightCluster);
+  if (leftComparableAnchors !== rightComparableAnchors) {
+    return rightComparableAnchors - leftComparableAnchors;
+  }
   const leftAnchors = countAnchors(leftCluster);
   const rightAnchors = countAnchors(rightCluster);
   if (leftAnchors !== rightAnchors) {

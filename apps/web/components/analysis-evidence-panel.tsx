@@ -4,6 +4,7 @@ import type { ContributionMapping, DiffCluster, DiffCodeAnchor, PaperContributio
 import { useEffect, useMemo, useState } from "react";
 
 import { AnalysisMonacoDiffViewer } from "@/components/analysis-monaco-diff-viewer";
+import { isComparableAnchor } from "@/lib/analysis-workbench";
 
 interface AnalysisEvidencePanelProps {
   contribution: PaperContribution | null;
@@ -40,7 +41,7 @@ function sortCodeAnchors(diffCluster: DiffCluster | null, mapping: ContributionM
   if (!diffCluster) {
     return [];
   }
-  const anchors = diffCluster.code_anchors ?? [];
+  const anchors = (diffCluster.code_anchors ?? []).filter((anchor) => isComparableAnchor(anchor));
   const readingOrder = mapping?.reading_order ?? [];
   const matchedAnchorIds = mapping?.matched_anchor_patch_ids ?? [];
   return [...anchors].sort((left, right) => {
@@ -93,6 +94,7 @@ function buildReviewFiles(diffCluster: DiffCluster | null, codeAnchors: DiffCode
   }
 
   return diffCluster.files
+    .filter((path) => grouped.has(path))
     .map((path) => ({
       path,
       anchors: grouped.get(path) ?? [],
@@ -363,7 +365,7 @@ export function AnalysisEvidencePanel({
             <small>Files changed</small>
             <h4>{diffCluster ? `${diffCluster.id} · ${diffCluster.label}` : "No diff cluster selected"}</h4>
             <p className="muted">
-              {reviewFiles.length} files · {codeAnchors.length} extracted code anchors
+              {reviewFiles.length} files · {codeAnchors.length} comparable code hunks
             </p>
           </div>
           <div className="github-filetree-shell">
@@ -392,7 +394,14 @@ export function AnalysisEvidencePanel({
             </p>
           </div>
 
-          {selectedFileAnchors.length > 0 ? (
+          {codeAnchors.length === 0 ? (
+            <div className="review-editor-shell empty">
+              <p className="muted">
+                No source-to-current comparable hunks were found for this mapping. All discovered changes were pure
+                additions or lacked an upstream counterpart, so they are omitted from review mode.
+              </p>
+            </div>
+          ) : selectedFileAnchors.length > 0 ? (
             <div className="github-diff-stack">
               {selectedFileAnchors.map((anchor) => {
                 const isActive = selectedAnchor ? anchorKey(anchor) === anchorKey(selectedAnchor) : false;
@@ -439,7 +448,10 @@ export function AnalysisEvidencePanel({
             </div>
           ) : (
             <div className="review-editor-shell empty">
-              <p className="muted">No code anchors were extracted for this file yet.</p>
+              <p className="muted">
+                No source-comparable diff hunks are available for this file. Pure additions or unmatched files are
+                omitted from review mode.
+              </p>
             </div>
           )}
         </section>
