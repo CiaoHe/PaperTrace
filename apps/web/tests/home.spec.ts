@@ -58,13 +58,13 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await page.getByRole("button", { name: "Analyze" }).click();
 
   await expect(page.getByText("Selected base repo")).toBeVisible();
-  await expect(
-    page.getByText("https://github.com/huggingface/transformers").first(),
-  ).toBeVisible();
+  await expect(page.getByText("https://github.com/huggingface/transformers").first()).toBeVisible();
   await expect(page.getByText("Runtime provenance")).toBeVisible();
   await expect(page.getByText("Paper fetch mode")).toBeVisible();
   await expect(page.getByText("strategy chain")).toBeVisible();
   await expect(page.getByText("Evidence review board")).toBeVisible();
+  await expect(page.getByText("Lineage graph")).toBeVisible();
+  await expect(page.getByText("Annotation panel")).toBeVisible();
   await expect(page.getByText("Contribution mappings")).toBeVisible();
   await expect(page.getByText("D1 → C1").first()).toBeVisible();
   await expect(page.getByText("Learning entry point")).toBeVisible();
@@ -88,9 +88,7 @@ test("uploads a PDF and renders pdf-file provenance", async ({ page }) => {
   await page.getByRole("button", { name: "Analyze" }).click();
 
   await expect(page.getByText("Selected base repo")).toBeVisible({ timeout: 15000 });
-  await expect(page.getByRole("heading", { name: "C1 · Low-rank adaptation modules" })).toBeVisible({
-    timeout: 15000,
-  });
+  await expect(page.getByText("C1 · Low-rank adaptation modules").first()).toBeVisible({ timeout: 15000 });
   await expect(
     page
       .locator(".item")

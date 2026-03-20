@@ -87,7 +87,7 @@ select {
 
 .grid-main {
   grid-template-columns: minmax(0, 420px) minmax(0, 1fr);
-  align-items: start;
+  align-items: flex-start;
 }
 
 .panel {
@@ -241,7 +241,7 @@ select {
   display: flex;
   justify-content: space-between;
   gap: 18px;
-  align-items: start;
+  align-items: flex-start;
 }
 
 .hero-metrics {
@@ -264,7 +264,7 @@ select {
   display: grid;
   grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
   gap: 14px;
-  align-items: start;
+  align-items: flex-start;
 }
 
 .evidence-grid {
@@ -313,7 +313,7 @@ select {
   display: flex;
   justify-content: space-between;
   gap: 14px;
-  align-items: start;
+  align-items: flex-start;
 }
 
 .trace-head h4,
@@ -355,7 +355,7 @@ select {
   display: flex;
   justify-content: space-between;
   gap: 18px;
-  align-items: start;
+  align-items: flex-start;
 }
 
 .section-head h3,
@@ -367,7 +367,7 @@ select {
   display: grid;
   grid-template-columns: minmax(0, 280px) minmax(0, 1fr) minmax(0, 320px);
   gap: 14px;
-  align-items: start;
+  align-items: flex-start;
 }
 
 .workbench-column,
@@ -427,6 +427,128 @@ select {
   margin: 0;
 }
 
+.lineage-graph {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.lineage-node {
+  display: grid;
+  gap: 6px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(24, 33, 47, 0.08);
+  background: white;
+}
+
+.lineage-node.selected {
+  background: linear-gradient(180deg, rgba(215, 244, 239, 0.95), rgba(255, 255, 255, 0.95));
+}
+
+.lineage-node.source {
+  background: linear-gradient(180deg, rgba(247, 243, 232, 0.96), rgba(255, 255, 255, 0.95));
+}
+
+.lineage-node p,
+.lineage-node strong {
+  margin: 0;
+}
+
+.lineage-edge {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+}
+
+.lineage-edge span {
+  display: block;
+  width: 100%;
+  height: 2px;
+  background: linear-gradient(90deg, rgba(24, 33, 47, 0.18), rgba(15, 118, 110, 0.7));
+}
+
+.lineage-branches {
+  display: grid;
+  gap: 10px;
+}
+
+.lineage-branch {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px dashed rgba(24, 33, 47, 0.12);
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.lineage-branch-node {
+  display: grid;
+  gap: 4px;
+}
+
+.lineage-branch-node p,
+.lineage-branch-node strong {
+  margin: 0;
+}
+
+.annotation-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.annotation-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(24, 33, 47, 0.08);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(233, 243, 246, 0.7));
+}
+
+.annotation-card h5,
+.annotation-card p {
+  margin: 0;
+}
+
+.code-anchor-list,
+.checklist {
+  display: grid;
+  gap: 10px;
+}
+
+.code-anchor {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(24, 33, 47, 0.1);
+  background: rgba(24, 33, 47, 0.04);
+  white-space: normal;
+  word-break: break-word;
+}
+
+.checklist-item {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.checklist-item span {
+  display: block;
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.checklist-item p {
+  margin: 0;
+}
+
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -450,6 +572,8 @@ select {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .lineage-graph,
+  .annotation-grid,
   .workbench-grid,
   .detail-grid {
     grid-template-columns: 1fr;

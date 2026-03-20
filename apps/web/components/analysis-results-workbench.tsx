@@ -3,10 +3,18 @@
 import type { AnalysisResult, ContributionMapping, DiffCluster, PaperContribution } from "@papertrace/contracts";
 import { useEffect, useState } from "react";
 
+import { AnalysisEvidencePanel } from "@/components/analysis-evidence-panel";
+import { AnalysisLineageGraph } from "@/components/analysis-lineage-graph";
+
 interface WorkbenchFocus {
   mappingKey: string | null;
   contributionId: string | null;
   clusterId: string | null;
+}
+
+interface AnalysisResultsWorkbenchProps {
+  result: AnalysisResult;
+  submittedRepoUrl: string;
 }
 
 function formatEnumLabel(value: string): string {
@@ -87,7 +95,7 @@ function focusCluster(result: AnalysisResult, clusterId: string): WorkbenchFocus
   };
 }
 
-export function AnalysisResultsWorkbench({ result }: { result: AnalysisResult }) {
+export function AnalysisResultsWorkbench({ result, submittedRepoUrl }: AnalysisResultsWorkbenchProps) {
   const [focus, setFocus] = useState<WorkbenchFocus>(() => defaultFocus(result));
 
   useEffect(() => {
@@ -319,6 +327,12 @@ export function AnalysisResultsWorkbench({ result }: { result: AnalysisResult })
                 </article>
               ) : null}
 
+              <AnalysisEvidencePanel
+                contribution={activeContribution}
+                diffCluster={activeCluster}
+                mapping={activeMapping}
+              />
+
               {activeContribution ? (
                 <div className="workbench-card">
                   <h4>
@@ -382,6 +396,8 @@ export function AnalysisResultsWorkbench({ result }: { result: AnalysisResult })
             </div>
 
             <aside className="workbench-column">
+              <AnalysisLineageGraph result={result} submittedRepoUrl={submittedRepoUrl} />
+
               <div className="workbench-card">
                 <h4>Lineage candidates</h4>
                 <div className="lineage-list">

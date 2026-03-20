@@ -342,7 +342,7 @@ export function AnalysisForm() {
           </div>
         </div>
 
-        {result ? <AnalysisResultsWorkbench result={result} /> : null}
+        {result ? <AnalysisResultsWorkbench result={result} submittedRepoUrl={repoUrl} /> : null}
       </section>
     </div>
   );
