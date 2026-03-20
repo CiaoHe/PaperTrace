@@ -46,6 +46,13 @@ class ProcessorMode(StrEnum):
     FIXTURE = "fixture"
 
 
+class CoverageType(StrEnum):
+    FULL = "FULL"
+    PARTIAL = "PARTIAL"
+    APPROXIMATED = "APPROXIMATED"
+    MISSING = "MISSING"
+
+
 class AnalysisRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -73,6 +80,10 @@ class PaperContribution(BaseModel):
     section: str
     keywords: list[str]
     impl_hints: list[str]
+    problem_solved: str | None = None
+    baseline_difference: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+    implementation_complexity: int | None = None
 
 
 class BaseRepoCandidate(BaseModel):
@@ -88,6 +99,8 @@ class DiffCluster(BaseModel):
     change_type: DiffChangeType
     files: list[str]
     summary: str
+    semantic_tags: list[str] = Field(default_factory=list)
+    related_cluster_ids: list[str] = Field(default_factory=list)
 
 
 class ContributionMapping(BaseModel):
@@ -96,6 +109,12 @@ class ContributionMapping(BaseModel):
     confidence: float
     evidence: str
     completeness: str
+    implementation_coverage: float = 0.0
+    coverage_type: CoverageType = CoverageType.PARTIAL
+    missing_aspects: list[str] = Field(default_factory=list)
+    engineering_divergences: list[str] = Field(default_factory=list)
+    learning_entry_point: str | None = None
+    reading_order: list[str] = Field(default_factory=list)
 
 
 class AnalysisRuntimeMetadata(BaseModel):

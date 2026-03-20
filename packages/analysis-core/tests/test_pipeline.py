@@ -6,6 +6,7 @@ from papertrace_core.heuristics import infer_contributions, infer_mappings
 from papertrace_core.models import (
     AnalysisRequest,
     BaseRepoCandidate,
+    CoverageType,
     PaperContribution,
     PaperDocument,
     PaperSection,
@@ -272,6 +273,8 @@ def test_heuristic_paper_parser_extracts_enumerated_contributions_from_sections(
     assert any(
         "retrieval distillation objective" in contribution.title.lower() for contribution in result.contributions
     )
+    assert any(contribution.problem_solved for contribution in result.contributions)
+    assert any(contribution.implementation_complexity for contribution in result.contributions)
     assert "Paper parser did not find an explicit method section." in result.warnings
 
 
@@ -352,6 +355,9 @@ def test_contribution_mapper_preserves_unmatched_items_without_fixture_fallback(
     assert output.mappings
     assert output.unmatched_contribution_ids == ["C2"]
     assert output.unmatched_diff_cluster_ids == []
+    assert output.mappings[0].implementation_coverage > 0
+    assert output.mappings[0].coverage_type in {CoverageType.FULL, CoverageType.PARTIAL, CoverageType.APPROXIMATED}
+    assert output.mappings[0].learning_entry_point is not None
 
 
 def test_contribution_mapper_returns_empty_matches_with_explicit_unmatched_ids() -> None:

@@ -154,7 +154,27 @@ export interface components {
             evidence: string;
             /** Completeness */
             completeness: string;
+            /**
+             * Implementation Coverage
+             * @default 0
+             */
+            implementation_coverage: number;
+            /** @default PARTIAL */
+            coverage_type: components["schemas"]["CoverageType"];
+            /** Missing Aspects */
+            missing_aspects?: string[];
+            /** Engineering Divergences */
+            engineering_divergences?: string[];
+            /** Learning Entry Point */
+            learning_entry_point?: string | null;
+            /** Reading Order */
+            reading_order?: string[];
         };
+        /**
+         * CoverageType
+         * @enum {string}
+         */
+        CoverageType: "FULL" | "PARTIAL" | "APPROXIMATED" | "MISSING";
         /** CreateAnalysisResponse */
         CreateAnalysisResponse: {
             job: components["schemas"]["JobStatusResponse"];
@@ -175,6 +195,10 @@ export interface components {
             files: string[];
             /** Summary */
             summary: string;
+            /** Semantic Tags */
+            semantic_tags?: string[];
+            /** Related Cluster Ids */
+            related_cluster_ids?: string[];
         };
         /** ExamplesResponse */
         ExamplesResponse: {
@@ -262,6 +286,14 @@ export interface components {
             keywords: string[];
             /** Impl Hints */
             impl_hints: string[];
+            /** Problem Solved */
+            problem_solved?: string | null;
+            /** Baseline Difference */
+            baseline_difference?: string | null;
+            /** Evidence Refs */
+            evidence_refs?: string[];
+            /** Implementation Complexity */
+            implementation_complexity?: number | null;
         };
         /**
          * PaperSourceKind

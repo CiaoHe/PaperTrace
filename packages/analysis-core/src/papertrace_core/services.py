@@ -15,6 +15,7 @@ from papertrace_core.heuristics import (
     infer_document_contributions,
     infer_mappings,
     parser_gap_warnings,
+    tokenize,
 )
 from papertrace_core.inputs import detect_paper_source_kind, normalize_repo_url
 from papertrace_core.interfaces import (
@@ -62,8 +63,10 @@ STRATEGY_PRIORITY: dict[str, int] = {
     "github_fork": 5,
     "readme_declaration": 4,
     "framework_signature": 4,
+    "fossil_evidence": 4,
     "paper_mention": 3,
     "dependency_archaeology": 3,
+    "shape_similarity": 3,
     "code_reference": 2,
     "code_fingerprint": 2,
     "fallback": 1,
@@ -91,6 +94,16 @@ SYMBOL_RE = re.compile(r"\b(?:class|def)\s+([A-Za-z_][A-Za-z0-9_]*)")
 IMPORT_RE = re.compile(r"\b(?:from|import)\s+([A-Za-z_][A-Za-z0-9_\.]*)")
 FINGERPRINT_SCORE_THRESHOLD = 0.12
 DIRECT_DEPENDENCY_RE = re.compile(r"(?:git\+)?(https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?)")
+LOCAL_IMPORT_RE = re.compile(r"\b(?:from|import)\s+([A-Za-z_][A-Za-z0-9_\.]*)")
+SEMANTIC_TAG_PATTERNS: dict[str, tuple[str, ...]] = {
+    "attention": ("attention", "attn", "qkv"),
+    "adapter": ("adapter", "lora", "rank"),
+    "loss": ("loss", "objective", "reward", "preference"),
+    "training": ("trainer", "optimizer", "warmup", "scheduler", "train"),
+    "kernel": ("kernel", "triton", "cuda", "fused"),
+    "data": ("dataset", "dataloader", "tokenizer", "preprocess"),
+    "inference": ("decode", "generate", "inference", "sampling"),
+}
 
 
 @dataclass(frozen=True)
@@ -99,6 +112,31 @@ class FrameworkSignature:
     imports: tuple[str, ...]
     base_classes: tuple[str, ...]
     dir_markers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ChangedFile:
+    relative_path: str
+    content: str
+    change_type: DiffChangeType
+    label: str
+    rationale: str
+    semantic_tags: list[str]
+    imports: set[str]
+    parent_dir: str
+    stem: str
+
+
+@dataclass
+class ClusterState:
+    change_type: DiffChangeType
+    label: str
+    files: list[str]
+    semantic_tags: list[str]
+    imports: list[str]
+    stems: list[str]
+    parent_dir: str
+    rationales: list[str]
 
 
 FRAMEWORK_SIGNATURES: dict[str, FrameworkSignature] = {
@@ -225,6 +263,63 @@ def load_repo_supporting_files(repo_root: Path) -> dict[str, str]:
     }
 
 
+def parse_dependency_names_from_supporting_files(supporting_files: dict[str, str]) -> set[str]:
+    dependency_names = set(
+        extract_dependency_names(
+            "\n".join(
+                [
+                    supporting_files.get("requirements.txt", ""),
+                    supporting_files.get("requirements-dev.txt", ""),
+                    supporting_files.get("setup.py", ""),
+                ]
+            )
+        )
+    )
+    dependency_names.update(parse_pyproject_dependencies(supporting_files.get("pyproject.toml", "")))
+    return dependency_names
+
+
+def list_repo_shape_tokens(snapshot: dict[str, str]) -> set[str]:
+    tokens: set[str] = set()
+    for relative_path in snapshot:
+        path = Path(relative_path)
+        if path.parts:
+            tokens.add(path.parts[0].lower())
+        if len(path.suffix) > 1:
+            tokens.add(path.suffix.lower())
+    return tokens
+
+
+def git_first_commit_info(repo_root: Path, timeout_seconds: float) -> tuple[str, list[str]]:
+    try:
+        root_commit = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-list", "--max-parents=0", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        ).stdout.strip()
+        if not root_commit:
+            return "", []
+        message = subprocess.run(
+            ["git", "-C", str(repo_root), "show", "-s", "--format=%s", root_commit],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        ).stdout.strip()
+        files = subprocess.run(
+            ["git", "-C", str(repo_root), "show", "--pretty=", "--name-only", root_commit],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        ).stdout.splitlines()
+        return message, [line.strip() for line in files if line.strip()]
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return "", []
+
+
 def classify_change_type(
     relative_path: str,
     content: str,
@@ -288,6 +383,28 @@ def summarize_cluster(
     if len(files) == 1:
         return f"{label} inferred from {files[0]}; bucketed as {change_type.lower()} because {rationale}."
     return f"{label} inferred from {len(files)} files; bucketed as {change_type.lower()} because {rationale}."
+
+
+def extract_semantic_tags(
+    relative_path: str,
+    content: str,
+    contributions: list[PaperContribution],
+) -> list[str]:
+    haystack = build_repo_file_haystack(relative_path, content)
+    tags = [tag for tag, patterns in SEMANTIC_TAG_PATTERNS.items() if any(pattern in haystack for pattern in patterns)]
+    for contribution in contributions:
+        contribution_tokens = tokenize(contribution.title) | set(contribution.keywords)
+        if contribution_tokens & tokenize(haystack):
+            tags.extend(sorted(token for token in contribution_tokens if len(token) >= 4)[:2])
+    return dedupe_preserving_order(tags)
+
+
+def extract_local_import_targets(content: str) -> set[str]:
+    targets: set[str] = set()
+    for imported_name in LOCAL_IMPORT_RE.findall(content):
+        parts = [part for part in imported_name.split(".") if part]
+        targets.update(part.lower() for part in parts[-2:])
+    return targets
 
 
 @dataclass(frozen=True)
@@ -715,6 +832,123 @@ def build_dependency_archaeology_candidates(
     return dedupe_repo_candidates(candidates), []
 
 
+def build_fossil_candidates(
+    request: AnalysisRequest,
+    repo_mirror: RepoMirror | None,
+    settings: Settings | None,
+) -> tuple[list[BaseRepoCandidate], list[str]]:
+    if repo_mirror is None or settings is None:
+        return [], []
+
+    try:
+        target_root = repo_mirror.prepare(request.repo_url)
+    except (RepoAccessError, KeyError) as exc:
+        return [], [f"Repo tracer skipped fossil detection: {exc}"]
+
+    message, first_commit_files = git_first_commit_info(target_root, settings.repo_clone_timeout_seconds)
+    if not message and not first_commit_files:
+        return [], []
+
+    candidates: list[BaseRepoCandidate] = []
+    bulk_import = len(first_commit_files) >= 8
+    for repo_url in extract_github_repo_urls(message):
+        candidates.append(
+            BaseRepoCandidate(
+                repo_url=repo_url,
+                strategy="fossil_evidence",
+                confidence=0.9 if bulk_import else 0.84,
+                evidence=(
+                    f"First commit references {repo_url} and imports {len(first_commit_files)} tracked files."
+                    if bulk_import
+                    else f"First commit message references {repo_url}."
+                ),
+            )
+        )
+    lowered_message = message.lower()
+    for alias, repo_url in KNOWN_UPSTREAM_ALIAS_MAP.items():
+        if text_contains_alias(lowered_message, alias):
+            candidates.append(
+                BaseRepoCandidate(
+                    repo_url=repo_url,
+                    strategy="fossil_evidence",
+                    confidence=0.86 if bulk_import else 0.8,
+                    evidence=(
+                        f"First commit mentions {alias} and looks like a bulk import."
+                        if bulk_import
+                        else f"First commit mentions {alias}."
+                    ),
+                )
+            )
+    return dedupe_repo_candidates(candidates), []
+
+
+def shape_similarity_candidate(
+    target_snapshot: dict[str, str],
+    target_supporting_files: dict[str, str],
+    candidate_snapshot: dict[str, str],
+    candidate_supporting_files: dict[str, str],
+) -> tuple[float, str]:
+    target_shape_tokens = list_repo_shape_tokens(target_snapshot)
+    candidate_shape_tokens = list_repo_shape_tokens(candidate_snapshot)
+    path_score = overlap_ratio(target_shape_tokens, candidate_shape_tokens)
+    target_dependencies = parse_dependency_names_from_supporting_files(target_supporting_files)
+    candidate_dependencies = parse_dependency_names_from_supporting_files(candidate_supporting_files)
+    dependency_score = overlap_ratio(target_dependencies, candidate_dependencies)
+    combined_score = 0.55 * path_score + 0.45 * dependency_score
+    evidence = (
+        f"Shape similarity found {len(target_shape_tokens & candidate_shape_tokens)} shared layout tokens and "
+        f"{len(target_dependencies & candidate_dependencies)} shared dependencies."
+    )
+    return combined_score, evidence
+
+
+def build_shape_similarity_candidates(
+    request: AnalysisRequest,
+    repo_mirror: RepoMirror | None,
+    settings: Settings | None,
+    candidate_repo_urls: list[str],
+) -> tuple[list[BaseRepoCandidate], list[str]]:
+    if repo_mirror is None or settings is None:
+        return [], []
+
+    try:
+        target_root = repo_mirror.prepare(request.repo_url)
+        target_snapshot = load_repo_snapshot(target_root, settings)
+        target_supporting_files = load_repo_supporting_files(target_root)
+    except (RepoAccessError, KeyError) as exc:
+        return [], [f"Repo tracer skipped shape-similarity analysis: {exc}"]
+
+    candidates: list[BaseRepoCandidate] = []
+    warnings: list[str] = []
+    for candidate_repo_url in candidate_repo_urls:
+        if candidate_repo_url == request.repo_url:
+            continue
+        try:
+            candidate_root = repo_mirror.prepare(candidate_repo_url)
+            candidate_snapshot = load_repo_snapshot(candidate_root, settings)
+            candidate_supporting_files = load_repo_supporting_files(candidate_root)
+        except (RepoAccessError, KeyError) as exc:
+            warnings.append(f"Repo tracer skipped shape candidate {candidate_repo_url}: {exc}")
+            continue
+        score, evidence = shape_similarity_candidate(
+            target_snapshot,
+            target_supporting_files,
+            candidate_snapshot,
+            candidate_supporting_files,
+        )
+        if score < 0.2:
+            continue
+        candidates.append(
+            BaseRepoCandidate(
+                repo_url=candidate_repo_url,
+                strategy="shape_similarity",
+                confidence=round(min(0.58 + score, 0.88), 2),
+                evidence=evidence,
+            )
+        )
+    return dedupe_repo_candidates(candidates), warnings
+
+
 def build_code_fingerprint_candidates(
     request: AnalysisRequest,
     repo_mirror: RepoMirror | None,
@@ -788,6 +1022,13 @@ class StrategyDrivenRepoTracer:
 
         paper_candidates = build_paper_mention_candidates(paper_document)
         candidates.extend(paper_candidates)
+        fossil_candidates, fossil_warnings = build_fossil_candidates(
+            request,
+            self.repo_mirror,
+            self.settings,
+        )
+        warnings.extend(fossil_warnings)
+        candidates.extend(fossil_candidates)
         framework_signature_candidates, framework_signature_warnings = build_framework_signature_candidates(
             request,
             self.repo_mirror,
@@ -812,6 +1053,7 @@ class StrategyDrivenRepoTracer:
             [
                 *([metadata_output.fork_parent] if metadata_output.fork_parent else []),
                 *[candidate.repo_url for candidate in paper_candidates],
+                *[candidate.repo_url for candidate in fossil_candidates],
                 *[candidate.repo_url for candidate in framework_signature_candidates],
                 *[candidate.repo_url for candidate in dependency_candidates],
                 *[candidate.repo_url for candidate in code_reference_candidates],
@@ -840,6 +1082,14 @@ class StrategyDrivenRepoTracer:
         )
         warnings.extend(fingerprint_warnings)
         candidates.extend(fingerprint_candidates)
+        shape_candidates, shape_warnings = build_shape_similarity_candidates(
+            request,
+            self.repo_mirror,
+            self.settings,
+            candidate_repo_urls,
+        )
+        warnings.extend(shape_warnings)
+        candidates.extend(shape_candidates)
 
         if not candidates:
             candidates.extend(
@@ -904,8 +1154,7 @@ class LiveRepoDiffAnalyzer:
                 ],
             )
 
-        grouped: dict[tuple[DiffChangeType, str], list[str]] = {}
-        rationales: dict[tuple[DiffChangeType, str], str] = {}
+        changed_files: list[ChangedFile] = []
         for relative_path, content in target_snapshot.items():
             base_content = base_snapshot.get(relative_path)
             if base_content == content:
@@ -916,11 +1165,21 @@ class LiveRepoDiffAnalyzer:
                 is_new_file=relative_path not in base_snapshot,
             )
             label = select_cluster_label(relative_path, content, contributions, change_type)
-            group_key = (change_type, label)
-            grouped.setdefault(group_key, []).append(relative_path)
-            rationales.setdefault(group_key, rationale)
+            changed_files.append(
+                ChangedFile(
+                    relative_path=relative_path,
+                    content=content,
+                    change_type=change_type,
+                    label=label,
+                    rationale=rationale,
+                    semantic_tags=extract_semantic_tags(relative_path, content, contributions),
+                    imports=extract_local_import_targets(content),
+                    parent_dir=Path(relative_path).parent.as_posix().lower(),
+                    stem=Path(relative_path).stem.lower(),
+                )
+            )
 
-        if not grouped:
+        if not changed_files:
             return DiffOutput(
                 diff_clusters=fixture.diff_clusters,
                 mode=ProcessorMode.FIXTURE,
@@ -929,21 +1188,74 @@ class LiveRepoDiffAnalyzer:
                 ],
             )
 
-        diff_clusters = [
-            DiffCluster(
-                id=f"D{index}",
-                label=label,
-                change_type=change_type,
-                files=sorted(files),
-                summary=summarize_cluster(
-                    label,
-                    sorted(files),
-                    change_type,
-                    rationales[(change_type, label)],
-                ),
+        cluster_states: list[ClusterState] = []
+        for changed_file in changed_files:
+            assigned_cluster: ClusterState | None = None
+            for cluster_state in cluster_states:
+                shared_tags = set(changed_file.semantic_tags) & set(cluster_state.semantic_tags)
+                shared_imports = set(changed_file.imports) & set(cluster_state.stems)
+                same_bucket = cluster_state.change_type == changed_file.change_type
+                same_label = cluster_state.label == changed_file.label
+                same_parent = cluster_state.parent_dir == changed_file.parent_dir
+                if same_bucket and (shared_tags or shared_imports or (same_label and same_parent)):
+                    assigned_cluster = cluster_state
+                    break
+
+            if assigned_cluster is None:
+                cluster_states.append(
+                    ClusterState(
+                        change_type=changed_file.change_type,
+                        label=changed_file.label,
+                        files=[changed_file.relative_path],
+                        semantic_tags=list(changed_file.semantic_tags),
+                        imports=list(changed_file.imports),
+                        stems=[changed_file.stem],
+                        parent_dir=changed_file.parent_dir,
+                        rationales=[changed_file.rationale],
+                    )
+                )
+                continue
+
+            assigned_cluster.files.append(changed_file.relative_path)
+            assigned_cluster.semantic_tags = dedupe_preserving_order(
+                [*assigned_cluster.semantic_tags, *changed_file.semantic_tags]
             )
-            for index, ((change_type, label), files) in enumerate(grouped.items(), start=1)
-        ]
+            assigned_cluster.imports = dedupe_preserving_order([*assigned_cluster.imports, *changed_file.imports])
+            assigned_cluster.stems = dedupe_preserving_order([*assigned_cluster.stems, changed_file.stem])
+            assigned_cluster.rationales = dedupe_preserving_order(
+                [*assigned_cluster.rationales, changed_file.rationale]
+            )
+
+        diff_clusters = []
+        for index, cluster_state in enumerate(cluster_states, start=1):
+            files = sorted(cluster_state.files)
+            semantic_tags = list(cluster_state.semantic_tags)
+            rationale = "; ".join(cluster_state.rationales[:2])
+            summary = summarize_cluster(
+                cluster_state.label,
+                files,
+                cluster_state.change_type,
+                rationale,
+            )
+            if semantic_tags:
+                summary = f"{summary} Semantic tags: {', '.join(semantic_tags[:4])}."
+            diff_clusters.append(
+                DiffCluster(
+                    id=f"D{index}",
+                    label=cluster_state.label,
+                    change_type=cluster_state.change_type,
+                    files=files,
+                    summary=summary,
+                    semantic_tags=semantic_tags,
+                )
+            )
+
+        for diff_cluster in diff_clusters:
+            diff_cluster.related_cluster_ids = [
+                other.id
+                for other in diff_clusters
+                if other.id != diff_cluster.id and set(diff_cluster.semantic_tags) & set(other.semantic_tags)
+            ]
         return DiffOutput(
             diff_clusters=diff_clusters,
             mode=ProcessorMode.HEURISTIC,

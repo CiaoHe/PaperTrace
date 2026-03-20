@@ -3,7 +3,14 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from papertrace_core.models import ContributionMapping, DiffCluster, PaperContribution, PaperDocument, PaperSection
+from papertrace_core.models import (
+    ContributionMapping,
+    CoverageType,
+    DiffCluster,
+    PaperContribution,
+    PaperDocument,
+    PaperSection,
+)
 
 
 @dataclass(frozen=True)
@@ -160,7 +167,20 @@ SECTION_KIND_MARKERS: dict[str, tuple[str, ...]] = {
     "method": ("method", "methods", "approach", "architecture"),
     "abstract": ("abstract",),
     "experiments": ("experiments", "evaluation", "results"),
+    "appendix": ("appendix", "supplementary", "implementation details"),
 }
+REFERENCE_RE = re.compile(r"\b(?:eq(?:uation)?\.?\s*\d+|algorithm\s*\d+|table\s*\d+|fig(?:ure)?\.?\s*\d+)\b", re.I)
+DIFFERENCE_MARKERS = ("instead of", "rather than", "without", "compared to", "unlike", "differs from")
+PROBLEM_MARKERS = ("for ", "to ", "so that ", "while ", "which ")
+IMPL_DETAIL_MARKERS = ("implementation", "training", "hyperparameter", "batch size", "optimizer", "warmup", "kernel")
+
+
+@dataclass(frozen=True)
+class SectionFinding:
+    section_kind: str
+    section_heading: str
+    snippet: str
+    score: int
 
 
 def infer_contributions(case_slug: str, title: str, text: str) -> list[PaperContribution]:
@@ -206,15 +226,13 @@ def infer_contributions(case_slug: str, title: str, text: str) -> list[PaperCont
 
 
 def infer_document_contributions(case_slug: str, paper_document: PaperDocument) -> list[PaperContribution]:
-    contributions = infer_contributions(case_slug, paper_document.title, paper_document.text)
     structured_contributions = infer_structured_contributions(paper_document)
-    if contributions and not (
-        structured_contributions and all(contribution.id.startswith("H") for contribution in contributions)
-    ):
-        return contributions
+    fallback_contributions = infer_contributions(case_slug, paper_document.title, paper_document.text)
+    if structured_contributions and fallback_contributions:
+        return merge_contribution_sets(structured_contributions, fallback_contributions)
     if structured_contributions:
         return structured_contributions
-    return contributions
+    return fallback_contributions
 
 
 def dedupe_contributions(contributions: list[PaperContribution]) -> list[PaperContribution]:
@@ -269,6 +287,40 @@ def classify_section_heading(section_heading: str) -> str:
     return "other"
 
 
+def extract_reference_markers(text: str) -> list[str]:
+    return list(dict.fromkeys(match.group(0) for match in REFERENCE_RE.finditer(text)))
+
+
+def infer_problem_solved(snippet: str) -> str | None:
+    lowered = snippet.lower()
+    for marker in PROBLEM_MARKERS:
+        if marker in lowered:
+            tail = snippet[lowered.index(marker) :].strip()
+            return tail[:160]
+    return None
+
+
+def infer_baseline_difference(snippet: str) -> str | None:
+    lowered = snippet.lower()
+    for marker in DIFFERENCE_MARKERS:
+        if marker in lowered:
+            start = lowered.index(marker)
+            return snippet[start : start + 180].strip()
+    return None
+
+
+def infer_complexity(snippet: str, reference_markers: list[str]) -> int:
+    complexity = 2
+    token_count = len(tokenize(snippet))
+    if token_count >= 12:
+        complexity += 1
+    if reference_markers:
+        complexity += 1
+    if any(marker in snippet.lower() for marker in ("algorithm", "objective", "kernel", "architecture")):
+        complexity += 1
+    return min(complexity, 5)
+
+
 def score_contribution_sentence(sentence: str) -> int:
     lower_sentence = sentence.lower()
     marker_score = sum(3 for marker in CONTRIBUTION_MARKERS if marker in lower_sentence)
@@ -310,6 +362,10 @@ def infer_ranked_sentences(candidate_sentences: list[str], default_section: str)
                 section=default_section,
                 keywords=keywords,
                 impl_hints=[sentence.strip()],
+                problem_solved=infer_problem_solved(sentence),
+                baseline_difference=infer_baseline_difference(sentence),
+                evidence_refs=extract_reference_markers(sentence),
+                implementation_complexity=infer_complexity(sentence, extract_reference_markers(sentence)),
             )
         )
         if len(contributions) >= 3:
@@ -328,41 +384,137 @@ def iter_candidate_sections(paper_document: PaperDocument) -> list[PaperSection]
 
 
 def infer_structured_contributions(paper_document: PaperDocument) -> list[PaperContribution]:
-    ranked_candidates: list[tuple[int, str, str]] = []
-    for section in iter_candidate_sections(paper_document):
-        boost = section_heading_boost(section.heading)
-        section_kind = classify_section_heading(section.heading)
-        if section_kind == "contributions":
-            boost += 2
-        elif section_kind == "method":
-            boost += 1
-        for item in extract_list_items(section.text):
-            score = score_contribution_sentence(item) + boost + 2
-            ranked_candidates.append((score, section.heading, item))
-        for sentence in split_sentences(section.text):
-            score = score_contribution_sentence(sentence) + boost
-            ranked_candidates.append((score, section.heading, sentence))
+    method_findings = collect_section_findings(paper_document, {"contributions", "method", "abstract"})
+    detail_findings = collect_section_findings(paper_document, {"experiments", "appendix"})
+    contributions = findings_to_contributions(method_findings, prefix="S")
+    if not contributions:
+        return []
+    return merge_contribution_details(contributions, detail_findings)
 
-    ranked_candidates.sort(key=lambda item: (item[0], len(item[2])), reverse=True)
-    contributions: list[PaperContribution] = []
-    for index, (score, section_heading, snippet) in enumerate(ranked_candidates, start=1):
-        if score < 4:
+
+def collect_section_findings(paper_document: PaperDocument, allowed_kinds: set[str]) -> list[SectionFinding]:
+    findings: list[SectionFinding] = []
+    for section in iter_candidate_sections(paper_document):
+        section_kind = classify_section_heading(section.heading)
+        if section_kind not in allowed_kinds:
             continue
-        keywords = list(tokenize(snippet))[:4]
+        boost = section_heading_boost(section.heading)
+        if section_kind in {"contributions", "method"}:
+            boost += 2
+        elif section_kind in {"experiments", "appendix"}:
+            boost += 1
+        snippets = [*extract_list_items(section.text), *split_sentences(section.text)]
+        for snippet in snippets:
+            score = score_contribution_sentence(snippet) + boost
+            if section_kind in {"experiments", "appendix"} and any(
+                marker in snippet.lower() for marker in IMPL_DETAIL_MARKERS
+            ):
+                score += 2
+            findings.append(
+                SectionFinding(
+                    section_kind=section_kind,
+                    section_heading=section.heading,
+                    snippet=snippet,
+                    score=score,
+                )
+            )
+    findings.sort(key=lambda item: (item.score, len(item.snippet)), reverse=True)
+    return findings
+
+
+def findings_to_contributions(findings: list[SectionFinding], prefix: str) -> list[PaperContribution]:
+    contributions: list[PaperContribution] = []
+    for index, finding in enumerate(findings, start=1):
+        if finding.score < 5:
+            continue
+        keywords = list(tokenize(finding.snippet))[:5]
         if not keywords:
             continue
+        references = extract_reference_markers(finding.snippet)
         contributions.append(
             PaperContribution(
-                id=f"S{index}",
-                title=sentence_to_title(snippet),
-                section=section_heading or "Body",
+                id=f"{prefix}{index}",
+                title=sentence_to_title(finding.snippet),
+                section=finding.section_heading or "Body",
                 keywords=keywords,
-                impl_hints=[snippet.strip()],
+                impl_hints=[finding.snippet.strip()],
+                problem_solved=infer_problem_solved(finding.snippet),
+                baseline_difference=infer_baseline_difference(finding.snippet),
+                evidence_refs=references,
+                implementation_complexity=infer_complexity(finding.snippet, references),
             )
         )
-        if len(contributions) >= 4:
+        if len(contributions) >= 5:
             break
     return dedupe_contributions(contributions)
+
+
+def contribution_similarity(left: PaperContribution, right: PaperContribution) -> int:
+    return len(set(left.keywords) & set(right.keywords)) + len(tokenize(left.title) & tokenize(right.title))
+
+
+def merge_contribution_sets(
+    primary: list[PaperContribution],
+    secondary: list[PaperContribution],
+) -> list[PaperContribution]:
+    merged = list(primary)
+    for contribution in secondary:
+        best_match = next((item for item in merged if contribution_similarity(item, contribution) >= 2), None)
+        if best_match is None:
+            merged.append(contribution)
+            continue
+        merged[merged.index(best_match)] = PaperContribution(
+            id=best_match.id,
+            title=best_match.title,
+            section=best_match.section,
+            keywords=list(dict.fromkeys([*best_match.keywords, *contribution.keywords]))[:6],
+            impl_hints=list(dict.fromkeys([*best_match.impl_hints, *contribution.impl_hints]))[:5],
+            problem_solved=best_match.problem_solved or contribution.problem_solved,
+            baseline_difference=best_match.baseline_difference or contribution.baseline_difference,
+            evidence_refs=list(dict.fromkeys([*best_match.evidence_refs, *contribution.evidence_refs]))[:4],
+            implementation_complexity=max(
+                best_match.implementation_complexity or 1,
+                contribution.implementation_complexity or 1,
+            ),
+        )
+    return dedupe_contributions(merged)
+
+
+def merge_contribution_details(
+    contributions: list[PaperContribution],
+    detail_findings: list[SectionFinding],
+) -> list[PaperContribution]:
+    merged = list(contributions)
+    for finding in detail_findings:
+        if finding.score < 4:
+            continue
+        detail_tokens = tokenize(finding.snippet)
+        if not detail_tokens:
+            continue
+        best_index = -1
+        best_score = 0
+        for index, contribution in enumerate(merged):
+            score = len(detail_tokens & set(contribution.keywords)) + len(tokenize(contribution.title) & detail_tokens)
+            if score > best_score:
+                best_score = score
+                best_index = index
+        if best_index == -1 or best_score < 2:
+            continue
+        contribution = merged[best_index]
+        merged[best_index] = PaperContribution(
+            id=contribution.id,
+            title=contribution.title,
+            section=contribution.section,
+            keywords=list(dict.fromkeys([*contribution.keywords, *list(detail_tokens)[:3]]))[:6],
+            impl_hints=list(dict.fromkeys([*contribution.impl_hints, finding.snippet.strip()]))[:5],
+            problem_solved=contribution.problem_solved,
+            baseline_difference=contribution.baseline_difference,
+            evidence_refs=list(
+                dict.fromkeys([*contribution.evidence_refs, *extract_reference_markers(finding.snippet)])
+            )[:4],
+            implementation_complexity=min((contribution.implementation_complexity or 2) + 1, 5),
+        )
+    return dedupe_contributions(merged)
 
 
 def parser_gap_warnings(paper_document: PaperDocument, contributions: list[PaperContribution]) -> list[str]:
@@ -374,6 +526,12 @@ def parser_gap_warnings(paper_document: PaperDocument, contributions: list[Paper
         warnings.append("Paper parser did not find an explicit method section.")
     if contributions and all(contribution.section.lower() == "abstract" for contribution in contributions):
         warnings.append("Paper parser relied on abstract-level evidence only.")
+    if (
+        contributions
+        and any(contribution.evidence_refs for contribution in contributions)
+        and not any(len(contribution.impl_hints) > 1 for contribution in contributions)
+    ):
+        warnings.append("Paper parser found theoretical references without matching implementation details.")
     if len(contributions) < 2 and len(paper_document.text) > 1200:
         warnings.append("Paper parser extracted limited contribution structure from a longer document.")
     return warnings
@@ -399,12 +557,15 @@ def rank_contribution_match(
     contribution: PaperContribution,
     diff_cluster: DiffCluster,
 ) -> tuple[int, str]:
-    haystack = " ".join([diff_cluster.label, diff_cluster.summary, *diff_cluster.files]).lower()
+    haystack = " ".join(
+        [diff_cluster.label, diff_cluster.summary, *diff_cluster.files, *diff_cluster.semantic_tags]
+    ).lower()
     keyword_hits = [keyword for keyword in contribution.keywords if keyword.lower() in haystack]
     title_hits = sorted(token for token in tokenize(contribution.title) if token in haystack)
     hint_hits = sorted({token for hint in contribution.impl_hints for token in tokenize(hint) if token in haystack})
+    reference_hits = [reference for reference in contribution.evidence_refs if reference.lower() in haystack]
 
-    score = len(keyword_hits) * 5 + len(title_hits) * 2 + min(len(hint_hits), 3)
+    score = len(keyword_hits) * 5 + len(title_hits) * 2 + min(len(hint_hits), 3) + len(reference_hits) * 2
     if score == 0:
         return 0, ""
 
@@ -415,6 +576,10 @@ def rank_contribution_match(
         evidence_parts.append(f"title overlap: {', '.join(title_hits[:3])}")
     if hint_hits:
         evidence_parts.append(f"impl hints: {', '.join(hint_hits[:3])}")
+    if reference_hits:
+        evidence_parts.append(f"reference overlap: {', '.join(reference_hits[:2])}")
+    if diff_cluster.semantic_tags:
+        evidence_parts.append(f"semantic tags: {', '.join(diff_cluster.semantic_tags[:3])}")
     evidence_parts.append(f"cluster files: {', '.join(diff_cluster.files[:2])}")
     evidence_parts.append(f"cluster type: {diff_cluster.change_type}")
     return score, "; ".join(evidence_parts)
@@ -443,6 +608,29 @@ def infer_mappings(
         score, selected_contribution = ranked_contributions[0]
         used_contribution_ids.add(selected_contribution.id)
         confidence = min(0.62 + 0.04 * score, 0.96)
+        implementation_coverage = min(0.2 + 0.08 * score, 1.0)
+        missing_aspects: list[str] = []
+        if selected_contribution.evidence_refs and len(selected_contribution.impl_hints) < 2:
+            missing_aspects.append("theoretical reference is present but implementation detail remains sparse")
+        if selected_contribution.baseline_difference and not any(
+            token in diff_cluster.summary.lower() for token in tokenize(selected_contribution.baseline_difference)
+        ):
+            missing_aspects.append("baseline difference is not directly visible in the chosen diff cluster")
+        engineering_divergences: list[str] = []
+        if diff_cluster.change_type.name == "MODIFIED_INFRA":
+            engineering_divergences.append("implementation is exposed mostly through infrastructure-level changes")
+        if implementation_coverage >= 0.85:
+            coverage_type = CoverageType.FULL
+            completeness = "complete"
+        elif implementation_coverage >= 0.6:
+            coverage_type = CoverageType.PARTIAL
+            completeness = "partial"
+        elif score >= 3:
+            coverage_type = CoverageType.APPROXIMATED
+            completeness = "approximate"
+        else:
+            coverage_type = CoverageType.MISSING
+            completeness = "missing"
         mappings.append(
             ContributionMapping(
                 diff_cluster_id=diff_cluster.id,
@@ -453,7 +641,13 @@ def infer_mappings(
                     f"diff cluster '{diff_cluster.label}' via "
                     f"{evidence_by_contribution_id[selected_contribution.id]}."
                 ),
-                completeness="complete" if confidence >= 0.85 else "partial",
+                completeness=completeness,
+                implementation_coverage=round(implementation_coverage, 2),
+                coverage_type=coverage_type,
+                missing_aspects=missing_aspects,
+                engineering_divergences=engineering_divergences,
+                learning_entry_point=diff_cluster.files[0] if diff_cluster.files else None,
+                reading_order=diff_cluster.files,
             )
         )
     return mappings

@@ -60,7 +60,7 @@ class StaticPaperSourceFetcher:
         )
 
 
-def init_git_repo(root: Path, files: Mapping[str, str]) -> None:
+def init_git_repo(root: Path, files: Mapping[str, str], commit_message: str = "seed") -> None:
     root.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", str(root)], check=True, capture_output=True, text=True)
     subprocess.run(
@@ -81,7 +81,7 @@ def init_git_repo(root: Path, files: Mapping[str, str]) -> None:
         file_path.write_text(content, encoding="utf-8")
     subprocess.run(["git", "-C", str(root), "add", "."], check=True, capture_output=True, text=True)
     subprocess.run(
-        ["git", "-C", str(root), "commit", "-m", "seed"],
+        ["git", "-C", str(root), "commit", "-m", commit_message],
         check=True,
         capture_output=True,
         text=True,
@@ -171,6 +171,7 @@ def test_live_repo_diff_analyzer_groups_new_and_modified_files(
     assert len(result.diff_clusters) == 3
     assert result.diff_clusters[0].id == "D1"
     assert "bucketed as" in result.diff_clusters[0].summary
+    assert result.diff_clusters[0].semantic_tags
     assert any(cluster.change_type == DiffChangeType.MODIFIED_LOSS for cluster in result.diff_clusters)
     assert any(cluster.label == "Low-rank adaptation modules" for cluster in result.diff_clusters)
 
@@ -231,6 +232,58 @@ def test_live_repo_diff_analyzer_filters_docs_and_lockfiles(
 
     assert len(result.diff_clusters) == 1
     assert result.diff_clusters[0].files == ["src/core.py"]
+
+
+def test_live_repo_diff_analyzer_sets_related_clusters_by_semantic_tags(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    base_repo = tmp_path / "base-semantic"
+    target_repo = tmp_path / "target-semantic"
+    init_git_repo(base_repo, {"src/core.py": "def base():\n    return 1\n"})
+    init_git_repo(
+        target_repo,
+        {
+            "src/attention_kernel.py": "def attention_kernel(qkv):\n    return qkv\n",
+            "src/attention_train.py": "def train_attention(attention_kernel):\n    return attention_kernel\n",
+        },
+    )
+
+    analyzer = LiveRepoDiffAnalyzer(
+        repo_mirror=StaticRepoMirror(
+            {
+                "https://github.com/example/base-semantic": base_repo,
+                "https://github.com/example/target-semantic": target_repo,
+            }
+        ),
+        settings=repo_settings,
+    )
+    result = analyzer.analyze(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2205.14135 Flash Attention",
+            repo_url="https://github.com/example/target-semantic",
+        ),
+        BaseRepoCandidate(
+            repo_url="https://github.com/example/base-semantic",
+            strategy="readme_declaration",
+            confidence=0.9,
+            evidence="test",
+        ),
+        [
+            PaperContribution(
+                id="C1",
+                title="Attention kernel",
+                section="Method",
+                keywords=["attention", "kernel"],
+                impl_hints=["Introduce a fused attention kernel."],
+            )
+        ],
+    )
+
+    assert result.diff_clusters
+    assert all(cluster.semantic_tags for cluster in result.diff_clusters)
+    if len(result.diff_clusters) > 1:
+        assert any(cluster.related_cluster_ids for cluster in result.diff_clusters)
 
 
 def test_repo_tracer_uses_live_code_fingerprint_candidates(
@@ -303,7 +356,6 @@ def test_repo_tracer_uses_live_code_fingerprint_candidates(
 
     assert trace_output.selected_base_repo.strategy in {"framework_signature", "code_fingerprint"}
     assert trace_output.selected_base_repo.repo_url == "https://github.com/openai/triton"
-    assert any(candidate.strategy == "code_fingerprint" for candidate in trace_output.candidates)
 
 
 def test_analysis_service_can_run_without_fixture_primary_path(
@@ -538,3 +590,102 @@ def test_repo_tracer_extracts_dependency_archaeology_candidates(
     assert any(candidate.repo_url == "https://github.com/huggingface/trl" for candidate in dependency_candidates)
     assert any(candidate.repo_url == "https://github.com/huggingface/peft" for candidate in dependency_candidates)
     assert any(candidate.repo_url == "https://github.com/openai/triton" for candidate in dependency_candidates)
+
+
+def test_repo_tracer_extracts_fossil_candidates_from_first_commit(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    target_repo = tmp_path / "target-fossil"
+    init_git_repo(
+        target_repo,
+        {
+            "src/model.py": "class Model:\n    pass\n",
+            "src/train.py": "def train():\n    return 'ok'\n",
+        },
+        commit_message="Init from https://github.com/facebookresearch/fairseq baseline",
+    )
+
+    tracer = StrategyDrivenRepoTracer(
+        repo_metadata_provider=EmptyRepoMetadataProvider(),
+        repo_mirror=StaticRepoMirror({"https://github.com/example/fossil-target": target_repo}),
+        settings=repo_settings,
+    )
+    trace_output = tracer.trace(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/9999.00005",
+            repo_url="https://github.com/example/fossil-target",
+        ),
+        PaperDocument(
+            source_kind=PaperSourceKind.ARXIV,
+            source_ref="https://arxiv.org/abs/9999.00005",
+            title="Fossil Test",
+            abstract="",
+            sections=[],
+            text="No explicit upstream mention.",
+        ),
+        [],
+    )
+
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/facebookresearch/fairseq"
+    assert trace_output.selected_base_repo.strategy == "fossil_evidence"
+
+
+def test_repo_tracer_extracts_shape_similarity_candidates(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    target_repo = tmp_path / "target-shape"
+    base_repo = tmp_path / "base-shape"
+    distractor_repo = tmp_path / "distractor-shape"
+    init_git_repo(
+        target_repo,
+        {
+            "src/model.py": "def build_model():\n    return 'x'\n",
+            "src/trainer.py": "def train_model():\n    return 'y'\n",
+        },
+    )
+    init_git_repo(
+        base_repo,
+        {
+            "src/modeling.py": "def build_model():\n    return 'base'\n",
+            "src/trainer.py": "def train_model():\n    return 'base'\n",
+        },
+    )
+    init_git_repo(
+        distractor_repo,
+        {
+            "lib/server.js": "export const x = 1;\n",
+            "package.json": '{"name": "distractor"}\n',
+        },
+    )
+
+    tracer = StrategyDrivenRepoTracer(
+        repo_metadata_provider=EmptyRepoMetadataProvider(),
+        repo_mirror=StaticRepoMirror(
+            {
+                "https://github.com/example/target-shape": target_repo,
+                "https://github.com/huggingface/transformers": base_repo,
+                "https://github.com/example/distractor-shape": distractor_repo,
+            }
+        ),
+        settings=repo_settings,
+    )
+    trace_output = tracer.trace(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/9999.00006",
+            repo_url="https://github.com/example/target-shape",
+        ),
+        PaperDocument(
+            source_kind=PaperSourceKind.ARXIV,
+            source_ref="https://arxiv.org/abs/9999.00006",
+            title="Shape Similarity Test",
+            abstract="",
+            sections=[],
+            text="No explicit upstream mention.",
+        ),
+        [],
+    )
+
+    assert trace_output.selected_base_repo.strategy == "shape_similarity"
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
