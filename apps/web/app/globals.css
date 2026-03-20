@@ -407,56 +407,10 @@ select {
   gap: 14px;
 }
 
-.evidence-workspace-grid {
-  display: grid;
-  grid-template-columns: minmax(260px, 300px) minmax(0, 1fr) minmax(320px, 360px);
-  gap: 16px;
-  align-items: flex-start;
-}
-
 .evidence-review-shell {
   display: grid;
   gap: 18px;
   min-height: calc(100vh - 92px);
-}
-
-.evidence-review-grid {
-  display: grid;
-  grid-template-columns: minmax(280px, 320px) minmax(0, 1.2fr) minmax(320px, 360px);
-  gap: 18px;
-  align-items: flex-start;
-}
-
-.evidence-review-rail,
-.evidence-review-main {
-  min-width: 0;
-}
-
-.evidence-review-rail-inner {
-  position: sticky;
-  top: 24px;
-  display: grid;
-  gap: 14px;
-  max-height: calc(100vh - 48px);
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.evidence-review-main {
-  display: grid;
-  gap: 16px;
-}
-
-.evidence-focus-card {
-  gap: 14px;
-}
-
-.evidence-focus-metrics {
-  align-items: stretch;
-}
-
-.evidence-detail-grid {
-  align-items: flex-start;
 }
 
 .workbench-column,
@@ -504,6 +458,18 @@ select {
 
 .signal-chip.static {
   cursor: default;
+}
+
+.mapping-lane {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.evidence-context-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
 }
 
 .lineage-card {
@@ -604,97 +570,136 @@ select {
   margin: 0;
 }
 
-.review-ribbon {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+.evidence-review-stage {
+  gap: 16px;
 }
 
-.code-anchor-list,
+.review-anchor-strip,
 .checklist {
   display: grid;
   gap: 10px;
 }
 
-.code-review-shell {
+.review-anchor-strip {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.review-anchor-chip {
   display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(24, 33, 47, 0.12);
+  background: rgba(255, 255, 255, 0.96);
+  cursor: pointer;
+}
+
+.review-anchor-chip.active,
+.review-file-chip.active,
+.pill-button:hover {
+  border-color: rgba(15, 118, 110, 0.32);
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.12);
+}
+
+.review-anchor-chip strong,
+.review-anchor-chip span {
+  display: block;
+}
+
+.three-way-review-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(320px, 380px);
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.review-pane {
+  display: grid;
   gap: 14px;
-  align-items: start;
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(24, 33, 47, 0.08);
+  background: rgba(255, 255, 255, 0.84);
+  min-width: 0;
 }
 
-.code-review-sidebar {
-  align-content: start;
+.review-pane-head {
+  display: grid;
+  gap: 6px;
 }
 
-.code-anchor-browser {
+.review-pane-head h4,
+.review-pane-head p {
+  margin: 0;
+}
+
+.review-pane-body {
   display: grid;
   gap: 12px;
 }
 
-.code-anchor-button,
-.code-anchor {
+.review-file-tree {
   display: grid;
   gap: 8px;
+}
+
+.review-file-chip {
+  display: grid;
+  gap: 4px;
   width: 100%;
   text-align: left;
   padding: 10px 12px;
   border-radius: 14px;
   border: 1px solid rgba(24, 33, 47, 0.1);
-  background: rgba(24, 33, 47, 0.04);
-}
-
-.code-anchor-button {
+  background: rgba(24, 33, 47, 0.03);
   cursor: pointer;
 }
 
-.code-anchor-button.active {
-  border-color: rgba(15, 118, 110, 0.32);
-  background: rgba(15, 118, 110, 0.08);
+.review-file-chip strong,
+.review-file-chip span {
+  display: block;
 }
 
-.code-anchor p,
-.code-anchor strong,
-.code-anchor pre,
-.code-anchor-button p,
-.code-anchor-button strong {
-  margin: 0;
+.paper-review-pane {
+  align-content: flex-start;
 }
 
-.code-anchor pre {
-  overflow-x: auto;
-  padding: 10px;
-  border-radius: 12px;
-  background: rgba(24, 33, 47, 0.92);
-  color: #f7f3e8;
-  white-space: pre-wrap;
-  word-break: break-word;
+.paper-review-stack {
+  display: grid;
+  gap: 12px;
 }
 
-.monaco-shell {
+.review-editor-shell {
   display: grid;
   gap: 10px;
   padding: 14px;
   border-radius: 16px;
-  border: 1px solid rgba(24, 33, 47, 0.1);
-  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(24, 33, 47, 0.08);
+  background: rgba(255, 255, 255, 0.96);
 }
 
-.monaco-shell.review-mode {
-  min-height: 680px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(233, 243, 246, 0.74));
-}
-
-.monaco-shell.empty {
-  min-height: 140px;
+.review-editor-shell.empty {
+  min-height: 160px;
   align-items: center;
 }
 
-.monaco-frame {
+.review-editor-frame {
   overflow: hidden;
   border-radius: 14px;
   border: 1px solid rgba(24, 33, 47, 0.08);
   background: white;
+}
+
+.pill-button {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(24, 33, 47, 0.08);
+  background: rgba(24, 33, 47, 0.06);
+  cursor: pointer;
 }
 
 .checklist-item {
@@ -746,24 +751,13 @@ select {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .review-ribbon,
-  .code-review-shell,
-  .evidence-review-grid,
-  .evidence-workspace-grid,
+  .mapping-lane,
+  .evidence-context-grid,
+  .review-anchor-strip,
+  .three-way-review-grid,
   .lineage-graph,
   .workbench-grid,
   .detail-grid {
     grid-template-columns: 1fr;
-  }
-
-  .evidence-review-rail-inner {
-    position: static;
-    max-height: none;
-    overflow: visible;
-    padding-right: 0;
-  }
-
-  .monaco-shell.review-mode {
-    min-height: 0;
   }
 }

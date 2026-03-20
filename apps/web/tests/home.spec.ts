@@ -70,17 +70,17 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await page.getByRole("link", { name: "Open evidence workspace" }).click();
   await expect(page).toHaveURL(/\/analyses\/.*\/evidence/);
   await expect(page.getByText("Evidence review board")).toBeVisible();
-  await expect(page.getByTestId("evidence-review-grid")).toBeVisible();
-  await expect(page.getByTestId("evidence-left-rail")).toBeVisible();
-  await expect(page.getByTestId("evidence-right-rail")).toBeVisible();
-  await expect(page.getByText("Annotation panel")).toBeVisible();
-  await expect(page.getByText("Contribution mappings")).toBeVisible();
-  await expect(page.getByTestId("evidence-code-review-shell")).toBeVisible();
+  await expect(page.getByText("Mapped change bundles")).toBeVisible();
+  await expect(page.getByTestId("mapping-lane")).toBeVisible();
+  await expect(page.getByTestId("three-way-review-grid")).toBeVisible();
+  await expect(page.getByTestId("source-review-pane")).toBeVisible();
+  await expect(page.getByTestId("current-review-pane")).toBeVisible();
+  await expect(page.getByTestId("paper-review-pane")).toBeVisible();
+  await expect(page.getByText("Linked change review")).toBeVisible();
   await expect(page.getByText("D1 → C1").first()).toBeVisible();
-  await expect(page.getByText("Learning entry point")).toBeVisible();
-  await expect(page.getByTestId("monaco-evidence-viewer")).toBeVisible();
-  await page.getByRole("button", { name: "Full cluster patch" }).click();
-  await expect(page.getByRole("heading", { name: /full cluster patch/i })).toBeVisible();
+  await expect(page.getByTestId("source-review-pane").getByText("Source repo")).toBeVisible();
+  await expect(page.getByTestId("current-review-pane").getByText("Current repo")).toBeVisible();
+  await expect(page.getByTestId("paper-review-pane").getByText("Paper", { exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: "Back to shell" })).toBeVisible();
 });
 
