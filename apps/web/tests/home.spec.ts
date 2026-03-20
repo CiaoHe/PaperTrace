@@ -82,6 +82,12 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await expect(page.getByText("Code review")).toBeVisible();
   await expect(page.getByTestId("paper-review-pane").getByText("Paper", { exact: true })).toBeVisible();
   await expect(page.getByTestId("monaco-evidence-viewer").first()).toBeVisible();
+  const firstDirectory = page.locator(".file-tree-node.dir").first();
+  await expect(firstDirectory).toHaveAttribute("aria-expanded", "true");
+  await firstDirectory.click();
+  await expect(firstDirectory).toHaveAttribute("aria-expanded", "false");
+  await firstDirectory.click();
+  await expect(firstDirectory).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByRole("link", { name: "Back to shell" })).toBeVisible();
 });
 

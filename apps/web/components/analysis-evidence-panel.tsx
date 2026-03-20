@@ -205,11 +205,14 @@ function FileTreeBranch({
           <div className="file-tree-group" key={node.path}>
             <button
               className="file-tree-node dir"
+              aria-expanded={expandedPaths.has(node.path)}
               onClick={() => onToggle(node.path)}
               style={{ paddingLeft: `${12 + depth * 18}px` }}
               type="button"
             >
-              <span>{expandedPaths.has(node.path) ? "▾" : "▸"} {node.name}</span>
+              <span>
+                {expandedPaths.has(node.path) ? "▾" : "▸"} {node.name}
+              </span>
               <small>{node.changedCount}</small>
             </button>
             {expandedPaths.has(node.path) ? (
@@ -264,11 +267,14 @@ export function AnalysisEvidencePanel({
   sourceRepoUrl,
   currentRepoUrl,
 }: AnalysisEvidencePanelProps) {
-  const paperClaims = buildPaperClaims(contribution);
-  const codeAnchors = sortCodeAnchors(diffCluster, mapping);
-  const reviewFiles = buildReviewFiles(diffCluster, codeAnchors);
+  const paperClaims = useMemo(() => buildPaperClaims(contribution), [contribution]);
+  const codeAnchors = useMemo(() => sortCodeAnchors(diffCluster, mapping), [diffCluster, mapping]);
+  const reviewFiles = useMemo(() => buildReviewFiles(diffCluster, codeAnchors), [diffCluster, codeAnchors]);
   const fileTree = useMemo(() => buildFileTree(reviewFiles), [reviewFiles]);
-  const reviewChecklist = buildReviewChecklist(contribution, diffCluster, mapping);
+  const reviewChecklist = useMemo(
+    () => buildReviewChecklist(contribution, diffCluster, mapping),
+    [contribution, diffCluster, mapping],
+  );
   const fidelityNotes = mapping?.fidelity_notes ?? [];
   const referenceBadges = contribution?.evidence_refs ?? [];
   const semanticTags = diffCluster?.semantic_tags ?? [];
@@ -285,7 +291,7 @@ export function AnalysisEvidencePanel({
     setSelectedAnchorKey(codeAnchors[0] ? anchorKey(codeAnchors[0]) : null);
     setSelectedClaim(paperClaims[0] ?? null);
     setExpandedPaths(new Set(ancestorPaths(nextFile)));
-  }, [reviewFiles, codeAnchors]);
+  }, [paperClaims, reviewFiles, codeAnchors]);
 
   const selectedFile = reviewFiles.find((file) => file.path === selectedFilePath) ?? reviewFiles[0] ?? null;
   const selectedFileAnchors = selectedFile?.anchors ?? [];
@@ -321,9 +327,7 @@ export function AnalysisEvidencePanel({
 
   function handleSelectFile(path: string) {
     setSelectedFilePath(path);
-    for (const parentPath of ancestorPaths(path)) {
-      setExpandedPaths((current) => new Set([...current, parentPath]));
-    }
+    setExpandedPaths((current) => new Set([...current, ...ancestorPaths(path)]));
   }
 
   function handleSelectClaim(claim: string) {
@@ -411,12 +415,14 @@ export function AnalysisEvidencePanel({
                     </div>
                     <div className="github-hunk-meta">
                       <code>
-                        @@ -{anchor.original_start_line ?? 0},{Math.max(
+                        @@ -{anchor.original_start_line ?? 0},
+                        {Math.max(
                           (anchor.original_end_line ?? anchor.original_start_line ?? 0) -
                             (anchor.original_start_line ?? 0) +
                             1,
                           0,
-                        )} +{anchor.start_line},{Math.max(anchor.end_line - anchor.start_line + 1, 0)} @@
+                        )}{" "}
+                        +{anchor.start_line},{Math.max(anchor.end_line - anchor.start_line + 1, 0)} @@
                       </code>
                       <span>{anchor.reason}</span>
                     </div>
