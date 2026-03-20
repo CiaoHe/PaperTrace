@@ -120,6 +120,9 @@ def test_create_analysis_runs_fixture_pipeline() -> None:
         job_response = client.get(f"/api/v1/analyses/{job_id}")
         assert job_response.status_code == 200
         assert job_response.json()["job"]["status"] == "succeeded"
+        assert job_response.json()["job"]["stage_progress"] == 1.0
+        assert job_response.json()["job"]["stage_detail"] == "Analysis result persisted."
+        assert len(job_response.json()["job"]["timeline"]) >= 3
 
         result_response = client.get(f"/api/v1/analyses/{job_id}/result")
         assert result_response.status_code == 200
@@ -210,3 +213,6 @@ def test_create_analysis_keeps_legacy_paper_source_compatibility() -> None:
         )
 
     assert response.status_code == 202
+    body = response.json()
+    assert body["job"]["stage_progress"] is not None
+    assert body["job"]["timeline"]

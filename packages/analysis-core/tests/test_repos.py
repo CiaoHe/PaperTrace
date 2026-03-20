@@ -53,7 +53,8 @@ class StaticPaperSourceFetcher:
     def __init__(self, paper_document: PaperDocument) -> None:
         self.paper_document = paper_document
 
-    def fetch(self, _: AnalysisRequest) -> FetchOutput:
+    def fetch(self, _: AnalysisRequest, *, progress: object | None = None) -> FetchOutput:
+        del progress
         return FetchOutput(
             paper_document=self.paper_document,
             mode=ProcessorMode.REMOTE_FETCH,

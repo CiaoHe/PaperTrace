@@ -18,6 +18,15 @@ import {
 const DEFAULT_PAPER = "https://arxiv.org/abs/2106.09685 LoRA";
 const DEFAULT_REPO = "https://github.com/microsoft/LoRA";
 const DEFAULT_PAPER_SOURCE_KIND: StructuredPaperSourceKind = "arxiv";
+const JOB_STAGE_ORDER = [
+  "paper_fetch",
+  "paper_parse",
+  "repo_fetch",
+  "ancestry_trace",
+  "diff_analyze",
+  "contribution_map",
+  "persist_result",
+] as const;
 
 function statusClass(status: JobStatusResponse["status"]): string {
   return status === "failed" ? "status failed" : "status";
@@ -25,6 +34,34 @@ function statusClass(status: JobStatusResponse["status"]): string {
 
 function formatEnumLabel(value: string): string {
   return value.replaceAll("_", " ");
+}
+
+function jobProgressPercent(job: JobStatusResponse): number {
+  if (job.status === "succeeded") {
+    return 100;
+  }
+  if (!job.stage) {
+    return 0;
+  }
+
+  const stageIndex = JOB_STAGE_ORDER.indexOf(job.stage);
+  const normalizedIndex = stageIndex === -1 ? 0 : stageIndex;
+  const stageProgress = job.stage_progress ?? 0;
+  return Math.max(0, Math.min(100, Math.round(((normalizedIndex + stageProgress) / JOB_STAGE_ORDER.length) * 100)));
+}
+
+function jobStageLabel(job: JobStatusResponse): string {
+  const parts = [job.stage ?? "pending", `${jobProgressPercent(job)}%`];
+  if (job.stage_detail) {
+    parts.push(job.stage_detail);
+  } else if (job.summary) {
+    parts.push(job.summary);
+  }
+  return parts.join(" · ");
+}
+
+function jobTimeline(job: JobStatusResponse) {
+  return job.timeline ?? [];
 }
 
 export function AnalysisForm() {
@@ -243,9 +280,12 @@ export function AnalysisForm() {
             <div className="kpi" style={{ marginTop: 18 }}>
               <strong>Job ID</strong>
               <code>{job.id}</code>
-              <small>
-                Stage: {job.stage ?? "pending"} {job.summary ? `• ${job.summary}` : ""}
-              </small>
+              <small>Stage: {jobStageLabel(job)}</small>
+              {jobTimeline(job).length > 0 ? (
+                <small>
+                  Latest event: {jobTimeline(job)[jobTimeline(job).length - 1]?.detail ?? "No detail reported."}
+                </small>
+              ) : null}
             </div>
           ) : null}
           {error ? (
@@ -318,9 +358,9 @@ export function AnalysisForm() {
                   <div className="item" key={listedJob.id}>
                     <h4>{listedJob.repo_url}</h4>
                     <p>
-                      {listedJob.status} {listedJob.stage ? `· ${listedJob.stage}` : ""}
+                      {listedJob.status} · {jobStageLabel(listedJob)}
                     </p>
-                    <p>{listedJob.summary ?? listedJob.paper_source}</p>
+                    <p>{listedJob.summary ?? listedJob.stage_detail ?? listedJob.paper_source}</p>
                     <div className="actions" style={{ marginTop: 10 }}>
                       <button className="button secondary" onClick={() => openJob(listedJob)} type="button">
                         Open job

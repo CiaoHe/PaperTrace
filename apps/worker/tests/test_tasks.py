@@ -28,6 +28,10 @@ def test_enqueue_analysis_persists_result() -> None:
     summary = get_job_summary(job_id)
     assert summary is not None
     assert summary.status.value == "succeeded"
+    assert summary.stage is not None
+    assert summary.stage_progress == 1.0
+    assert summary.stage_detail == "Analysis result persisted."
+    assert len(summary.timeline) >= 3
 
     result = get_job_result(job_id)
     assert result is not None

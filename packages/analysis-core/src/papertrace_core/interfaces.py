@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -9,6 +10,7 @@ from papertrace_core.models import (
     BaseRepoCandidate,
     ContributionMapping,
     DiffCluster,
+    JobStage,
     PaperContribution,
     PaperDocument,
     ProcessorMode,
@@ -61,12 +63,26 @@ class MappingOutput:
     warnings: list[str]
 
 
+StageProgressCallback = Callable[[JobStage, float, str], None]
+
+
 class PaperSourceFetcher(Protocol):
-    def fetch(self, request: AnalysisRequest) -> FetchOutput: ...
+    def fetch(
+        self,
+        request: AnalysisRequest,
+        *,
+        progress: StageProgressCallback | None = None,
+    ) -> FetchOutput: ...
 
 
 class PaperParser(Protocol):
-    def parse(self, request: AnalysisRequest, paper_document: PaperDocument) -> ParseOutput: ...
+    def parse(
+        self,
+        request: AnalysisRequest,
+        paper_document: PaperDocument,
+        *,
+        progress: StageProgressCallback | None = None,
+    ) -> ParseOutput: ...
 
 
 class RepoTracer(Protocol):
@@ -75,6 +91,8 @@ class RepoTracer(Protocol):
         request: AnalysisRequest,
         paper_document: PaperDocument,
         contributions: list[PaperContribution],
+        *,
+        progress: StageProgressCallback | None = None,
     ) -> TraceOutput: ...
 
 
@@ -88,6 +106,8 @@ class DiffAnalyzer(Protocol):
         request: AnalysisRequest,
         selected_base_repo: BaseRepoCandidate,
         contributions: list[PaperContribution],
+        *,
+        progress: StageProgressCallback | None = None,
     ) -> DiffOutput: ...
 
 
@@ -97,6 +117,8 @@ class ContributionMapper(Protocol):
         request: AnalysisRequest,
         contributions: list[PaperContribution],
         diff_clusters: list[DiffCluster],
+        *,
+        progress: StageProgressCallback | None = None,
     ) -> MappingOutput: ...
 
 

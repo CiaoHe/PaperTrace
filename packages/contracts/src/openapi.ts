@@ -281,6 +281,10 @@ export interface components {
             id: string;
             status: components["schemas"]["JobStatus"];
             stage?: components["schemas"]["JobStage"] | null;
+            /** Stage Progress */
+            stage_progress?: number | null;
+            /** Stage Detail */
+            stage_detail?: string | null;
             /** Paper Source */
             paper_source: string;
             /** Repo Url */
@@ -289,8 +293,24 @@ export interface components {
             summary?: string | null;
             /** Error Message */
             error_message?: string | null;
+            /** Timeline */
+            timeline?: components["schemas"]["JobTelemetryEvent"][];
             /** Result Available */
             result_available: boolean;
+        };
+        /** JobTelemetryEvent */
+        JobTelemetryEvent: {
+            /**
+             * Timestamp
+             * Format: date-time
+             */
+            timestamp: string;
+            status: components["schemas"]["JobStatus"];
+            stage?: components["schemas"]["JobStage"] | null;
+            /** Progress */
+            progress?: number | null;
+            /** Detail */
+            detail?: string | null;
         };
         /** JobsResponse */
         JobsResponse: {

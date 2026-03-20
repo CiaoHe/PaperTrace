@@ -33,6 +33,7 @@ from papertrace_core.interfaces import (
     RepoMetadataProvider,
     RepoMirror,
     RepoTracer,
+    StageProgressCallback,
     TraceOutput,
 )
 from papertrace_core.llm import LLMClient, build_llm_client
@@ -44,6 +45,7 @@ from papertrace_core.models import (
     DiffChangeType,
     DiffCluster,
     DiffCodeAnchor,
+    JobStage,
     PaperContribution,
     PaperDocument,
     ProcessorMode,
@@ -568,13 +570,29 @@ def metadata_url_confidence(relative_path: str) -> float:
 class HeuristicPaperParser:
     llm_client: LLMClient | None = None
 
-    def parse(self, request: AnalysisRequest, paper_document: PaperDocument) -> ParseOutput:
+    def parse(
+        self,
+        request: AnalysisRequest,
+        paper_document: PaperDocument,
+        *,
+        progress: StageProgressCallback | None = None,
+    ) -> ParseOutput:
         case_slug = detect_case_slug(request)
         warnings: list[str] = []
+        if progress is not None:
+            progress(JobStage.PAPER_PARSE, 0.1, "Classifying paper sections and extraction lanes.")
         if self.llm_client is not None:
             try:
+                if progress is not None:
+                    progress(JobStage.PAPER_PARSE, 0.35, "Requesting structured contributions from the LLM parser.")
                 llm_contributions = self.llm_client.extract_contributions(paper_document)
                 if llm_contributions:
+                    if progress is not None:
+                        progress(
+                            JobStage.PAPER_PARSE,
+                            1.0,
+                            f"Structured {len(llm_contributions)} contributions with the LLM parser.",
+                        )
                     return ParseOutput(
                         contributions=llm_contributions,
                         mode=ProcessorMode.LLM,
@@ -583,14 +601,24 @@ class HeuristicPaperParser:
                 warnings.append("Paper parser received an empty llm response and fell back.")
             except Exception:
                 warnings.append("Paper parser fell back from llm to heuristic extraction.")
+        if progress is not None:
+            progress(JobStage.PAPER_PARSE, 0.7, "Running heuristic contribution extraction.")
         contributions = infer_document_contributions(case_slug, paper_document)
         if contributions:
+            if progress is not None:
+                progress(
+                    JobStage.PAPER_PARSE,
+                    1.0,
+                    f"Extracted {len(contributions)} contributions via heuristic parsing.",
+                )
             return ParseOutput(
                 contributions=contributions,
                 mode=ProcessorMode.HEURISTIC,
                 warnings=[*warnings, *parser_gap_warnings(paper_document, contributions)],
             )
         fixture = load_golden_case(case_slug)
+        if progress is not None:
+            progress(JobStage.PAPER_PARSE, 1.0, "Heuristic parser failed; falling back to fixture contributions.")
         return ParseOutput(
             contributions=fixture.contributions,
             mode=ProcessorMode.FIXTURE,
@@ -1336,12 +1364,19 @@ class StrategyDrivenRepoTracer:
         request: AnalysisRequest,
         paper_document: PaperDocument,
         contributions: list[PaperContribution],
+        *,
+        progress: StageProgressCallback | None = None,
     ) -> TraceOutput:
         del contributions
         case_slug = detect_case_slug(request)
         golden = load_golden_case(case_slug)
+        if progress is not None:
+            progress(JobStage.REPO_FETCH, 0.1, "Fetching repository metadata and upstream hints.")
         metadata_output = self.repo_metadata_provider.fetch(request)
         warnings = list(metadata_output.warnings)
+        if progress is not None:
+            progress(JobStage.REPO_FETCH, 1.0, "Repository metadata loaded; ancestry tracing is ready.")
+            progress(JobStage.ANCESTRY_TRACE, 0.1, "Scanning paper mentions and repository archaeology.")
 
         candidates: list[BaseRepoCandidate] = []
         if metadata_output.fork_parent:
@@ -1356,6 +1391,12 @@ class StrategyDrivenRepoTracer:
 
         paper_candidates = build_paper_mention_candidates(paper_document)
         candidates.extend(paper_candidates)
+        if progress is not None:
+            progress(
+                JobStage.ANCESTRY_TRACE,
+                0.35,
+                f"Collected {len(candidates)} ancestry candidates after paper-mention expansion.",
+            )
         fossil_candidates, fossil_warnings = build_fossil_candidates(
             request,
             self.repo_mirror,
@@ -1440,6 +1481,12 @@ class StrategyDrivenRepoTracer:
         )
         warnings.extend(shape_warnings)
         candidates.extend(shape_candidates)
+        if progress is not None:
+            progress(
+                JobStage.ANCESTRY_TRACE,
+                0.75,
+                f"Expanded ancestry evidence to {len(candidates)} raw candidate hypotheses.",
+            )
 
         if not candidates:
             candidates.extend(
@@ -1453,6 +1500,12 @@ class StrategyDrivenRepoTracer:
             )
 
         deduped = dedupe_repo_candidates(candidates)
+        if progress is not None:
+            progress(
+                JobStage.ANCESTRY_TRACE,
+                1.0,
+                f"Ranked {len(deduped)} base repo candidates; selected {deduped[0].repo_url}.",
+            )
         return TraceOutput(
             selected_base_repo=deduped[0],
             candidates=deduped,
@@ -1467,9 +1520,13 @@ class FixtureDiffAnalyzer:
         request: AnalysisRequest,
         selected_base_repo: BaseRepoCandidate,
         contributions: list[PaperContribution],
+        *,
+        progress: StageProgressCallback | None = None,
     ) -> DiffOutput:
         del selected_base_repo, contributions
         fixture = load_golden_case(detect_case_slug(request))
+        if progress is not None:
+            progress(JobStage.DIFF_ANALYZE, 1.0, "Returned fixture-backed diff clusters.")
         return DiffOutput(
             diff_clusters=fixture.diff_clusters,
             mode=ProcessorMode.FIXTURE,
@@ -1487,14 +1544,22 @@ class LiveRepoDiffAnalyzer:
         request: AnalysisRequest,
         selected_base_repo: BaseRepoCandidate,
         contributions: list[PaperContribution],
+        *,
+        progress: StageProgressCallback | None = None,
     ) -> DiffOutput:
         fixture = load_golden_case(detect_case_slug(request))
         try:
+            if progress is not None:
+                progress(JobStage.DIFF_ANALYZE, 0.1, "Preparing shallow clones for base and target repositories.")
             base_root = self.repo_mirror.prepare(selected_base_repo.repo_url)
             target_root = self.repo_mirror.prepare(request.repo_url)
             base_snapshot = load_repo_snapshot(base_root, self.settings)
             target_snapshot = load_repo_snapshot(target_root, self.settings)
+            if progress is not None:
+                progress(JobStage.DIFF_ANALYZE, 0.4, "Loaded repository snapshots and started change discovery.")
         except RepoAccessError as exc:
+            if progress is not None:
+                progress(JobStage.DIFF_ANALYZE, 1.0, "Repo diff failed; returning fixture diff clusters.")
             return DiffOutput(
                 diff_clusters=fixture.diff_clusters,
                 mode=ProcessorMode.FIXTURE,
@@ -1531,6 +1596,8 @@ class LiveRepoDiffAnalyzer:
             )
 
         if not changed_files:
+            if progress is not None:
+                progress(JobStage.DIFF_ANALYZE, 1.0, "No meaningful diffs found; returning fixture diff clusters.")
             return DiffOutput(
                 diff_clusters=fixture.diff_clusters,
                 mode=ProcessorMode.FIXTURE,
@@ -1558,6 +1625,12 @@ class LiveRepoDiffAnalyzer:
                     rationales=dedupe_preserving_order([file.rationale for file in component_files]),
                     link_reasons=component_link_reasons,
                 )
+            )
+        if progress is not None:
+            progress(
+                JobStage.DIFF_ANALYZE,
+                0.75,
+                f"Grouped {len(changed_files)} changed files into {len(cluster_states)} semantic components.",
             )
 
         diff_clusters = []
@@ -1608,6 +1681,8 @@ class LiveRepoDiffAnalyzer:
                 for other in diff_clusters
                 if other.id != diff_cluster.id and set(diff_cluster.semantic_tags) & set(other.semantic_tags)
             ]
+        if progress is not None:
+            progress(JobStage.DIFF_ANALYZE, 1.0, f"Built {len(diff_clusters)} diff clusters with code evidence.")
         return DiffOutput(
             diff_clusters=diff_clusters,
             mode=ProcessorMode.HEURISTIC,
@@ -1624,10 +1699,16 @@ class FixtureContributionMapper:
         request: AnalysisRequest,
         contributions: list[PaperContribution],
         diff_clusters: list[DiffCluster],
+        *,
+        progress: StageProgressCallback | None = None,
     ) -> MappingOutput:
         warnings: list[str] = []
+        if progress is not None:
+            progress(JobStage.CONTRIBUTION_MAP, 0.1, "Preparing contribution-to-diff alignment.")
         if self.llm_client is not None:
             try:
+                if progress is not None:
+                    progress(JobStage.CONTRIBUTION_MAP, 0.4, "Requesting LLM contribution mapping review.")
                 llm_mappings = self.llm_client.map_contributions(contributions, diff_clusters)
                 if llm_mappings:
                     unmatched_contribution_ids, unmatched_diff_cluster_ids = collect_unmatched_ids(
@@ -1645,6 +1726,8 @@ class FixtureContributionMapper:
                 warnings.append("Contribution mapper received an empty llm response and fell back.")
             except Exception:
                 warnings.append("Contribution mapper fell back from llm to heuristic matching.")
+        if progress is not None:
+            progress(JobStage.CONTRIBUTION_MAP, 0.75, "Running heuristic contribution mapping.")
         mappings = infer_mappings(contributions, diff_clusters)
         unmatched_contribution_ids, unmatched_diff_cluster_ids = collect_unmatched_ids(
             contributions,
@@ -1653,6 +1736,15 @@ class FixtureContributionMapper:
         )
         if not mappings:
             warnings.append("Contribution mapper found no confident heuristic matches.")
+        if progress is not None:
+            progress(
+                JobStage.CONTRIBUTION_MAP,
+                1.0,
+                (
+                    f"Mapped {len(mappings)} contribution links; "
+                    f"{len(unmatched_contribution_ids)} contributions remain unmatched."
+                ),
+            )
         return MappingOutput(
             mappings=mappings,
             unmatched_contribution_ids=unmatched_contribution_ids,
@@ -1670,24 +1762,47 @@ class AnalysisService:
     diff_analyzer: DiffAnalyzer
     contribution_mapper: ContributionMapper
 
-    def analyze(self, request: AnalysisRequest) -> AnalysisResult:
+    def analyze(
+        self,
+        request: AnalysisRequest,
+        *,
+        progress: StageProgressCallback | None = None,
+    ) -> AnalysisResult:
         fixture = load_golden_case(detect_case_slug(request))
-        fetch_output = self.paper_source_fetcher.fetch(request)
-        parse_output = self.paper_parser.parse(request, fetch_output.paper_document)
+        if progress is not None:
+            progress(JobStage.PAPER_FETCH, 0.0, "Starting paper fetch.")
+        fetch_output = self.paper_source_fetcher.fetch(request, progress=progress)
+        if progress is not None:
+            progress(
+                JobStage.PAPER_FETCH,
+                1.0,
+                f"Loaded {fetch_output.paper_document.source_kind} paper source {fetch_output.paper_document.title}.",
+            )
+            progress(JobStage.PAPER_PARSE, 0.0, "Starting structured paper parsing.")
+        parse_output = self.paper_parser.parse(request, fetch_output.paper_document, progress=progress)
+        if progress is not None:
+            progress(
+                JobStage.PAPER_PARSE,
+                1.0,
+                f"Paper parsing completed with {len(parse_output.contributions)} contributions.",
+            )
         trace_output = self.repo_tracer.trace(
             request,
             fetch_output.paper_document,
             parse_output.contributions,
+            progress=progress,
         )
         diff_output = self.diff_analyzer.analyze(
             request,
             trace_output.selected_base_repo,
             parse_output.contributions,
+            progress=progress,
         )
         mapping_output = self.contribution_mapper.map(
             request,
             parse_output.contributions,
             diff_output.diff_clusters,
+            progress=progress,
         )
         stage_warnings = dedupe_preserving_order(
             [

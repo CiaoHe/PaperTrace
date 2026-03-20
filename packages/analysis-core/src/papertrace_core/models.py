@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
@@ -155,14 +156,25 @@ class AnalysisResult(BaseModel):
     warnings: list[str]
 
 
+class JobTelemetryEvent(BaseModel):
+    timestamp: datetime
+    status: JobStatus
+    stage: JobStage | None = None
+    progress: float | None = Field(default=None, ge=0.0, le=1.0)
+    detail: str | None = None
+
+
 class JobSummary(BaseModel):
     id: str
     status: JobStatus
     stage: JobStage | None = None
+    stage_progress: float | None = Field(default=None, ge=0.0, le=1.0)
+    stage_detail: str | None = None
     paper_source: str
     repo_url: str
     summary: str | None = None
     error_message: str | None = None
+    timeline: list[JobTelemetryEvent] = Field(default_factory=list)
 
 
 class JobStatusResponse(JobSummary):

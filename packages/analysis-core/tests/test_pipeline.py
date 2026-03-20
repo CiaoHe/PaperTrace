@@ -9,6 +9,7 @@ from papertrace_core.models import (
     CoverageType,
     DiffChangeType,
     DiffCluster,
+    JobStage,
     PaperContribution,
     PaperDocument,
     PaperSection,
@@ -57,6 +58,30 @@ def test_run_analysis_returns_fixture_payload() -> None:
     assert result.case_slug == "dpo"
     assert result.selected_base_repo.repo_url == "https://github.com/huggingface/trl"
     assert len(result.diff_clusters) == 1
+
+
+def test_run_analysis_emits_progress_events_in_stage_order() -> None:
+    request = AnalysisRequest(
+        paper_source="https://arxiv.org/abs/2205.14135 Flash Attention",
+        repo_url="https://github.com/Dao-AILab/flash-attention",
+    )
+    progress_events: list[tuple[JobStage, float, str]] = []
+
+    result = run_analysis(request, progress=lambda stage, ratio, detail: progress_events.append((stage, ratio, detail)))
+
+    assert result.case_slug == "flash-attention"
+    assert progress_events
+    observed_stages = {stage for stage, _, _ in progress_events}
+    assert {
+        JobStage.PAPER_FETCH,
+        JobStage.PAPER_PARSE,
+        JobStage.REPO_FETCH,
+        JobStage.ANCESTRY_TRACE,
+        JobStage.DIFF_ANALYZE,
+        JobStage.CONTRIBUTION_MAP,
+    } <= observed_stages
+    assert progress_events[-1][0] == JobStage.CONTRIBUTION_MAP
+    assert progress_events[-1][1] == 1.0
 
 
 def test_default_analysis_service_recomposes_fixture_result() -> None:

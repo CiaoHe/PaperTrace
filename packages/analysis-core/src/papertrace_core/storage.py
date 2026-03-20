@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Engine, String, create_engine, select
+from sqlalchemy import JSON, DateTime, Engine, Float, String, create_engine, inspect, select, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 from papertrace_core.models import (
@@ -17,6 +17,7 @@ from papertrace_core.models import (
     JobStatus,
     JobStatusResponse,
     JobSummary,
+    JobTelemetryEvent,
 )
 from papertrace_core.settings import get_settings
 
@@ -31,11 +32,14 @@ class AnalysisJobRecord(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stage_progress: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stage_detail: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     paper_source: Mapped[str] = mapped_column(String(2048), nullable=False)
     repo_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     summary: Mapped[str | None] = mapped_column(String(4096), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(4096), nullable=True)
     result_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    timeline_payload: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -80,7 +84,9 @@ def get_session_factory() -> sessionmaker[Session]:
 
 
 def init_db() -> None:
-    Base.metadata.create_all(get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    _ensure_analysis_jobs_schema(engine)
 
 
 @contextmanager
@@ -99,15 +105,25 @@ def session_scope() -> Generator[Session, None, None]:
 def create_job(request: AnalysisRequest) -> JobSummary:
     now = datetime.now(UTC)
     job_id = str(uuid4())
+    initial_event = JobTelemetryEvent(
+        timestamp=now,
+        status=JobStatus.QUEUED,
+        stage=None,
+        progress=0.0,
+        detail="Job accepted and queued for execution.",
+    )
     record = AnalysisJobRecord(
         id=job_id,
         status=JobStatus.QUEUED.value,
         stage=None,
+        stage_progress=0.0,
+        stage_detail=initial_event.detail,
         paper_source=request.paper_source,
         repo_url=request.repo_url,
         summary=None,
         error_message=None,
         result_payload=None,
+        timeline_payload=[initial_event.model_dump(mode="json")],
         created_at=now,
         updated_at=now,
     )
@@ -117,10 +133,13 @@ def create_job(request: AnalysisRequest) -> JobSummary:
         id=job_id,
         status=JobStatus.QUEUED,
         stage=None,
+        stage_progress=0.0,
+        stage_detail=initial_event.detail,
         paper_source=request.paper_source,
         repo_url=request.repo_url,
         summary=None,
         error_message=None,
+        timeline=[initial_event],
     )
 
 
@@ -129,16 +148,7 @@ def get_job_summary(job_id: str) -> JobStatusResponse | None:
         record = session.get(AnalysisJobRecord, job_id)
         if record is None:
             return None
-        return JobStatusResponse(
-            id=record.id,
-            status=JobStatus(record.status),
-            stage=JobStage(record.stage) if record.stage else None,
-            paper_source=record.paper_source,
-            repo_url=record.repo_url,
-            summary=record.summary,
-            error_message=record.error_message,
-            result_available=record.result_payload is not None,
-        )
+        return _build_job_status_response(record)
 
 
 def get_job_result(job_id: str) -> AnalysisResult | None:
@@ -154,6 +164,8 @@ def update_job_status(
     *,
     status: JobStatus,
     stage: JobStage | None = None,
+    stage_progress: float | None = None,
+    stage_detail: str | None = None,
     summary: str | None = None,
     error_message: str | None = None,
     result: AnalysisResult | None = None,
@@ -162,30 +174,102 @@ def update_job_status(
         record = session.get(AnalysisJobRecord, job_id)
         if record is None:
             raise ValueError(f"Job not found: {job_id}")
+        previous_stage = JobStage(record.stage) if record.stage else None
         record.status = status.value
         record.stage = stage.value if stage is not None else None
+        if stage is None:
+            record.stage_progress = None
+            record.stage_detail = stage_detail
+        else:
+            if stage_progress is not None:
+                record.stage_progress = max(0.0, min(1.0, stage_progress))
+            elif previous_stage != stage:
+                record.stage_progress = 0.0
+            if stage_detail is not None:
+                record.stage_detail = stage_detail
+            elif previous_stage != stage:
+                record.stage_detail = None
         if summary is not None:
             record.summary = summary
         if error_message is not None:
             record.error_message = error_message
         if result is not None:
             record.result_payload = result.model_dump(mode="json")
+        timeline = _load_timeline(record.timeline_payload)
+        next_event = JobTelemetryEvent(
+            timestamp=datetime.now(UTC),
+            status=status,
+            stage=stage,
+            progress=record.stage_progress,
+            detail=record.stage_detail,
+        )
+        if _should_append_timeline_event(timeline, next_event):
+            timeline.append(next_event)
+        record.timeline_payload = [event.model_dump(mode="json") for event in timeline]
         record.updated_at = datetime.now(UTC)
 
 
 def list_jobs() -> list[JobStatusResponse]:
     with session_scope() as session:
         records = session.scalars(select(AnalysisJobRecord).order_by(AnalysisJobRecord.created_at.desc())).all()
-        return [
-            JobStatusResponse(
-                id=record.id,
-                status=JobStatus(record.status),
-                stage=JobStage(record.stage) if record.stage else None,
-                paper_source=record.paper_source,
-                repo_url=record.repo_url,
-                summary=record.summary,
-                error_message=record.error_message,
-                result_available=record.result_payload is not None,
-            )
-            for record in records
-        ]
+        return [_build_job_status_response(record) for record in records]
+
+
+def _ensure_analysis_jobs_schema(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if not inspector.has_table(AnalysisJobRecord.__tablename__):
+        return
+
+    column_names = {column["name"] for column in inspector.get_columns(AnalysisJobRecord.__tablename__)}
+    alter_statements: list[str] = []
+    if "stage_progress" not in column_names:
+        alter_statements.append("ALTER TABLE analysis_jobs ADD COLUMN stage_progress FLOAT")
+    if "stage_detail" not in column_names:
+        alter_statements.append("ALTER TABLE analysis_jobs ADD COLUMN stage_detail VARCHAR(1024)")
+    if "timeline_payload" not in column_names:
+        alter_statements.append("ALTER TABLE analysis_jobs ADD COLUMN timeline_payload JSON")
+
+    if not alter_statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in alter_statements:
+            connection.execute(text(statement))
+        connection.execute(text("UPDATE analysis_jobs SET timeline_payload = '[]' WHERE timeline_payload IS NULL"))
+
+
+def _load_timeline(payload: list[dict[str, Any]] | None) -> list[JobTelemetryEvent]:
+    if not payload:
+        return []
+    return [JobTelemetryEvent.model_validate(item) for item in payload]
+
+
+def _should_append_timeline_event(
+    timeline: list[JobTelemetryEvent],
+    next_event: JobTelemetryEvent,
+) -> bool:
+    if not timeline:
+        return True
+    latest_event = timeline[-1]
+    return (
+        latest_event.status != next_event.status
+        or latest_event.stage != next_event.stage
+        or latest_event.progress != next_event.progress
+        or latest_event.detail != next_event.detail
+    )
+
+
+def _build_job_status_response(record: AnalysisJobRecord) -> JobStatusResponse:
+    return JobStatusResponse(
+        id=record.id,
+        status=JobStatus(record.status),
+        stage=JobStage(record.stage) if record.stage else None,
+        stage_progress=record.stage_progress,
+        stage_detail=record.stage_detail,
+        paper_source=record.paper_source,
+        repo_url=record.repo_url,
+        summary=record.summary,
+        error_message=record.error_message,
+        timeline=_load_timeline(record.timeline_payload),
+        result_available=record.result_payload is not None,
+    )

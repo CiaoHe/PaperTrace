@@ -12,9 +12,10 @@ from pypdf import PdfReader
 from papertrace_core.cases import detect_case_slug
 from papertrace_core.fixtures import PaperFixture, load_paper_fixture
 from papertrace_core.inputs import detect_paper_source_kind, extract_arxiv_id
-from papertrace_core.interfaces import FetchOutput, PaperSourceFetcher
+from papertrace_core.interfaces import FetchOutput, PaperSourceFetcher, StageProgressCallback
 from papertrace_core.models import (
     AnalysisRequest,
+    JobStage,
     PaperDocument,
     PaperSection,
     PaperSourceKind,
@@ -142,8 +143,17 @@ def build_pdf_document(
 
 @dataclass(frozen=True)
 class FixturePaperSourceFetcher:
-    def fetch(self, request: AnalysisRequest) -> FetchOutput:
+    def fetch(
+        self,
+        request: AnalysisRequest,
+        *,
+        progress: StageProgressCallback | None = None,
+    ) -> FetchOutput:
+        if progress is not None:
+            progress(JobStage.PAPER_FETCH, 0.3, "Loading fixture paper content.")
         fixture = load_paper_fixture(detect_case_slug(request))
+        if progress is not None:
+            progress(JobStage.PAPER_FETCH, 1.0, f"Loaded fixture paper content for {fixture.title}.")
         return FetchOutput(
             paper_document=paper_document_from_fixture(request, fixture),
             mode=ProcessorMode.FIXTURE,
@@ -156,10 +166,17 @@ class ArxivPaperSourceFetcher:
     settings: Settings
     client: httpx.Client | None = None
 
-    def fetch(self, request: AnalysisRequest) -> FetchOutput:
+    def fetch(
+        self,
+        request: AnalysisRequest,
+        *,
+        progress: StageProgressCallback | None = None,
+    ) -> FetchOutput:
         arxiv_id = extract_arxiv_id(request.paper_source)
         if arxiv_id is None:
             raise PaperFetchError("Paper source does not contain a valid arXiv identifier")
+        if progress is not None:
+            progress(JobStage.PAPER_FETCH, 0.15, f"Fetching arXiv metadata for {arxiv_id}.")
 
         close_client = self.client is None
         client = self.client or httpx.Client(timeout=self.settings.arxiv_timeout_seconds)
@@ -168,6 +185,8 @@ class ArxivPaperSourceFetcher:
         try:
             response = client.get(endpoint, params={"id_list": arxiv_id})
             response.raise_for_status()
+            if progress is not None:
+                progress(JobStage.PAPER_FETCH, 0.65, f"Received arXiv response for {arxiv_id}.")
             root = ET.fromstring(response.text)
             entry = root.find("atom:entry", ATOM_NS)
             if entry is None:
@@ -183,6 +202,8 @@ class ArxivPaperSourceFetcher:
             if close_client:
                 client.close()
 
+        if progress is not None:
+            progress(JobStage.PAPER_FETCH, 1.0, f"Loaded arXiv abstract for {title}.")
         return FetchOutput(
             paper_document=PaperDocument(
                 source_kind=PaperSourceKind.ARXIV,
@@ -225,9 +246,18 @@ class PdfPaperSourceFetcher:
             if close_client:
                 client.close()
 
-    def fetch(self, request: AnalysisRequest) -> FetchOutput:
+    def fetch(
+        self,
+        request: AnalysisRequest,
+        *,
+        progress: StageProgressCallback | None = None,
+    ) -> FetchOutput:
         try:
+            if progress is not None:
+                progress(JobStage.PAPER_FETCH, 0.1, "Loading PDF source.")
             reader, source_kind, source_ref = self._load_pdf_reader(request)
+            if progress is not None:
+                progress(JobStage.PAPER_FETCH, 0.55, "Extracting text from PDF pages.")
             text_by_page = [
                 (reader.pages[index].extract_text() or "")
                 for index in range(min(len(reader.pages), self.settings.pdf_max_pages))
@@ -244,6 +274,8 @@ class PdfPaperSourceFetcher:
                 raise
             raise PaperFetchError(f"Failed to parse PDF source {request.paper_source}: {exc}") from exc
 
+        if progress is not None:
+            progress(JobStage.PAPER_FETCH, 1.0, f"Extracted PDF text for {paper_document.title}.")
         return FetchOutput(
             paper_document=paper_document,
             mode=ProcessorMode.REMOTE_FETCH,
@@ -256,12 +288,17 @@ class SourceAwarePaperSourceFetcher:
     arxiv_fetcher: ArxivPaperSourceFetcher
     pdf_fetcher: PdfPaperSourceFetcher
 
-    def fetch(self, request: AnalysisRequest) -> FetchOutput:
+    def fetch(
+        self,
+        request: AnalysisRequest,
+        *,
+        progress: StageProgressCallback | None = None,
+    ) -> FetchOutput:
         paper_source_kind = detect_paper_source_kind(request.paper_source)
         if paper_source_kind == PaperSourceKind.ARXIV:
-            return self.arxiv_fetcher.fetch(request)
+            return self.arxiv_fetcher.fetch(request, progress=progress)
         if paper_source_kind in {PaperSourceKind.PDF_URL, PaperSourceKind.PDF_FILE}:
-            return self.pdf_fetcher.fetch(request)
+            return self.pdf_fetcher.fetch(request, progress=progress)
         raise PaperFetchError(f"Paper source kind {paper_source_kind} does not support live fetching")
 
 
@@ -270,11 +307,18 @@ class ChainedPaperSourceFetcher:
     primary: PaperSourceFetcher
     fallback: FixturePaperSourceFetcher
 
-    def fetch(self, request: AnalysisRequest) -> FetchOutput:
+    def fetch(
+        self,
+        request: AnalysisRequest,
+        *,
+        progress: StageProgressCallback | None = None,
+    ) -> FetchOutput:
         try:
-            return self.primary.fetch(request)
+            return self.primary.fetch(request, progress=progress)
         except PaperFetchError as exc:
-            fallback_output = self.fallback.fetch(request)
+            if progress is not None:
+                progress(JobStage.PAPER_FETCH, 0.8, "Live paper fetch failed; switching to fixture fallback.")
+            fallback_output = self.fallback.fetch(request, progress=progress)
             return FetchOutput(
                 paper_document=fallback_output.paper_document,
                 mode=fallback_output.mode,
