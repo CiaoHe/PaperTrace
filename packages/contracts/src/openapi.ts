@@ -188,6 +188,8 @@ export interface components {
         DiffCluster: {
             /** Id */
             id: string;
+            /** Patch Id */
+            patch_id?: string | null;
             /** Label */
             label: string;
             change_type: components["schemas"]["DiffChangeType"];
@@ -204,6 +206,8 @@ export interface components {
         };
         /** DiffCodeAnchor */
         DiffCodeAnchor: {
+            /** Patch Id */
+            patch_id?: string | null;
             /** File Path */
             file_path: string;
             /** Start Line */

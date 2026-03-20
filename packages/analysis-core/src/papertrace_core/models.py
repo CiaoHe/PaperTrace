@@ -95,6 +95,7 @@ class BaseRepoCandidate(BaseModel):
 
 
 class DiffCodeAnchor(BaseModel):
+    patch_id: str | None = None
     file_path: str
     start_line: int
     end_line: int
@@ -108,6 +109,7 @@ class DiffCodeAnchor(BaseModel):
 
 class DiffCluster(BaseModel):
     id: str
+    patch_id: str | None = None
     label: str
     change_type: DiffChangeType
     files: list[str]

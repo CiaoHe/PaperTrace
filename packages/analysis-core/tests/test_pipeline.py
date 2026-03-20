@@ -38,6 +38,22 @@ class EmptyLLMClient:
         return []
 
 
+class SparseRoutingLLMClient:
+    def extract_contributions(self, _: object) -> list[object]:
+        return [
+            PaperContribution(
+                id="L1",
+                title="Sparse routing encoder",
+                section="Method",
+                keywords=["routing", "encoder"],
+                impl_hints=["Introduce a sparse routing encoder for long-context retrieval."],
+            )
+        ]
+
+    def map_contributions(self, _: object, __: object) -> list[object]:
+        return []
+
+
 def test_detect_case_slug_prefers_lora_fixture() -> None:
     request = AnalysisRequest(
         paper_source="https://arxiv.org/abs/2106.09685 LoRA",
@@ -199,6 +215,49 @@ def test_service_records_fallback_notes_when_llm_returns_empty_payloads() -> Non
     assert result.metadata.contribution_mapper_mode == ProcessorMode.HEURISTIC
     assert "Paper parser received an empty llm response and fell back." in result.metadata.fallback_notes
     assert "Contribution mapper received an empty llm response and fell back." in result.metadata.fallback_notes
+
+
+def test_heuristic_paper_parser_merges_llm_output_with_heuristic_evidence() -> None:
+    request = AnalysisRequest(
+        paper_source="/tmp/llm-augmented-paper.pdf",
+        repo_url="https://github.com/example/research-repo",
+    )
+    paper_document = PaperDocument(
+        source_kind=PaperSourceKind.PDF_FILE,
+        source_ref=request.paper_source,
+        title="Sparse Routing Distillation",
+        abstract="We introduce a sparse routing encoder for long-context retrieval.",
+        sections=[
+            PaperSection(
+                heading="2 Method",
+                text=(
+                    "We introduce a sparse routing encoder that compresses long documents into routing slots.\n"
+                    "Algorithm 1 describes the sparse routing update."
+                ),
+            ),
+            PaperSection(
+                heading="4 Experiments",
+                text=("Implementation details: cached slot reuse keeps CPU-friendly local validation stable."),
+            ),
+        ],
+        text=(
+            "Sparse Routing Distillation\n"
+            "We introduce a sparse routing encoder for long-context retrieval.\n"
+            "Algorithm 1 describes the sparse routing update.\n"
+            "Implementation details: cached slot reuse keeps CPU-friendly local validation stable."
+        ),
+    )
+
+    result = HeuristicPaperParser(llm_client=cast(Any, SparseRoutingLLMClient())).parse(request, paper_document)
+
+    assert result.mode == ProcessorMode.LLM
+    assert result.contributions
+    assert any(contribution.title == "Sparse routing encoder" for contribution in result.contributions)
+    merged = next(
+        contribution for contribution in result.contributions if contribution.title == "Sparse routing encoder"
+    )
+    assert "Algorithm 1" in merged.evidence_refs
+    assert len(merged.impl_hints) >= 2
 
 
 def test_heuristic_paper_parser_uses_fetched_paper_document() -> None:

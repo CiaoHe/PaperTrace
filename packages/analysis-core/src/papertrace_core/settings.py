@@ -99,6 +99,9 @@ class Settings(BaseSettings):
     llm_base_url: str | None = Field(default=None, alias="LLM_BASE_URL")
     llm_model: str | None = Field(default=None, alias="LLM_MODEL")
     llm_timeout_seconds: float = Field(default=30.0, alias="LLM_TIMEOUT_SECONDS")
+    llm_paper_parse_max_sections: int = Field(default=8, alias="LLM_PAPER_PARSE_MAX_SECTIONS")
+    llm_paper_parse_section_chars: int = Field(default=3500, alias="LLM_PAPER_PARSE_SECTION_CHARS")
+    llm_paper_parse_total_chars: int = Field(default=14000, alias="LLM_PAPER_PARSE_TOTAL_CHARS")
 
     def use_live_paper_fetch(self) -> bool:
         return self.enable_live_paper_fetch or self.enable_live_by_default

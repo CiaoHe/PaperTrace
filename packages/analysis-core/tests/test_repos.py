@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -60,6 +61,27 @@ class StaticPaperSourceFetcher:
             mode=ProcessorMode.REMOTE_FETCH,
             warnings=[],
         )
+
+
+class LLMRepoSuggestionClient:
+    def suggest_base_repos(
+        self,
+        *,
+        request_repo_url: str,
+        paper_document: PaperDocument,
+        readme_text: str,
+        notes: str,
+        existing_candidates: list[BaseRepoCandidate],
+    ) -> list[BaseRepoCandidate]:
+        del request_repo_url, paper_document, readme_text, notes, existing_candidates
+        return [
+            BaseRepoCandidate(
+                repo_url="https://github.com/facebookresearch/fairseq",
+                strategy="llm_reasoning",
+                confidence=0.67,
+                evidence="LLM inferred fairseq ancestry from sequence-model training terminology.",
+            )
+        ]
 
 
 def init_git_repo(root: Path, files: Mapping[str, str], commit_message: str = "seed") -> None:
@@ -175,8 +197,10 @@ def test_live_repo_diff_analyzer_groups_new_and_modified_files(
     assert "bucketed as" in result.diff_clusters[0].summary
     assert result.diff_clusters[0].semantic_tags
     assert result.diff_clusters[0].code_anchors
+    assert result.diff_clusters[0].patch_id is not None
     assert result.diff_clusters[0].code_anchors[0].start_line >= 1
     assert result.diff_clusters[0].code_anchors[0].snippet
+    assert result.diff_clusters[0].code_anchors[0].patch_id is not None
     assert any(anchor.original_snippet for cluster in result.diff_clusters for anchor in cluster.code_anchors)
     assert any(cluster.change_type == DiffChangeType.MODIFIED_LOSS for cluster in result.diff_clusters)
     assert any(cluster.label == "Low-rank adaptation modules" for cluster in result.diff_clusters)
@@ -355,6 +379,7 @@ def test_live_repo_diff_analyzer_uses_graph_component_clustering(
     ]
     assert "Linked by" in result.diff_clusters[0].summary
     assert len(result.diff_clusters[0].code_anchors) >= 2
+    assert all(anchor.patch_id for anchor in result.diff_clusters[0].code_anchors)
     assert any("attention_kernel" in anchor.snippet for anchor in result.diff_clusters[0].code_anchors)
     assert all(
         anchor.anchor_kind in {"addition", "context", "modification"} for anchor in result.diff_clusters[0].code_anchors
@@ -617,6 +642,35 @@ def test_repo_tracer_extracts_framework_signature_candidates(
     assert trace_output.selected_base_repo.strategy == "framework_signature"
     assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
     assert any(candidate.strategy == "framework_signature" for candidate in trace_output.candidates)
+
+
+def test_repo_tracer_can_add_llm_reasoning_candidates() -> None:
+    request = AnalysisRequest(
+        paper_source="https://arxiv.org/abs/9999.00009",
+        repo_url="https://github.com/example/custom-seq-model",
+    )
+    paper_document = PaperDocument(
+        source_kind=PaperSourceKind.ARXIV,
+        source_ref="https://arxiv.org/abs/9999.00009",
+        title="Sequence Distillation",
+        abstract="We build a sequence distillation trainer with beam-search style decoding.",
+        sections=[],
+        text="We adapt sequence distillation and beam-search training loops for translation.",
+    )
+
+    trace_output = StrategyDrivenRepoTracer(
+        repo_metadata_provider=EmptyRepoMetadataProvider(),
+        llm_client=cast(Any, LLMRepoSuggestionClient()),
+    ).trace(
+        request,
+        paper_document,
+        [],
+    )
+
+    assert any(candidate.strategy == "llm_reasoning" for candidate in trace_output.candidates)
+    assert any(
+        candidate.repo_url == "https://github.com/facebookresearch/fairseq" for candidate in trace_output.candidates
+    )
 
 
 def test_repo_tracer_extracts_dependency_archaeology_candidates(

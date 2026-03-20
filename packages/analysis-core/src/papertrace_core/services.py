@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import re
 import subprocess
 import tomllib
@@ -18,6 +19,7 @@ from papertrace_core.heuristics import (
     collect_unmatched_ids,
     infer_document_contributions,
     infer_mappings,
+    merge_contribution_sets,
     parser_gap_warnings,
     tokenize,
 )
@@ -76,6 +78,7 @@ STRATEGY_PRIORITY: dict[str, int] = {
     "dependency_archaeology": 3,
     "github_code_search": 3,
     "shape_similarity": 3,
+    "llm_reasoning": 2,
     "code_reference": 2,
     "code_fingerprint": 2,
     "fallback": 1,
@@ -450,6 +453,11 @@ def anchor_kind_from_opcode(opcode: str) -> str:
     return "modification"
 
 
+def stable_patch_id(*parts: str) -> str:
+    digest = hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
 def build_file_code_anchors(
     relative_path: str,
     base_content: str | None,
@@ -482,6 +490,16 @@ def build_file_code_anchors(
         )
         anchors.append(
             DiffCodeAnchor(
+                patch_id=stable_patch_id(
+                    relative_path,
+                    str(start_line),
+                    str(end_line),
+                    str(original_start_line or 0),
+                    str(original_end_line or 0),
+                    snippet,
+                    original_snippet or "",
+                    opcode,
+                ),
                 file_path=relative_path,
                 start_line=start_line,
                 end_line=end_line,
@@ -502,6 +520,16 @@ def build_file_code_anchors(
         return []
     return [
         DiffCodeAnchor(
+            patch_id=stable_patch_id(
+                relative_path,
+                "1",
+                str(len(fallback_lines)),
+                "1" if base_lines else "0",
+                str(min(len(base_lines), len(fallback_lines)) if base_lines else 0),
+                "\n".join(fallback_lines),
+                "\n".join(base_lines[: min(len(base_lines), 8)]).strip() if base_lines else "",
+                "context",
+            ),
             file_path=relative_path,
             start_line=1,
             end_line=len(fallback_lines),
@@ -579,6 +607,7 @@ class HeuristicPaperParser:
     ) -> ParseOutput:
         case_slug = detect_case_slug(request)
         warnings: list[str] = []
+        heuristic_contributions = infer_document_contributions(case_slug, paper_document)
         if progress is not None:
             progress(JobStage.PAPER_PARSE, 0.1, "Classifying paper sections and extraction lanes.")
         if self.llm_client is not None:
@@ -587,34 +616,39 @@ class HeuristicPaperParser:
                     progress(JobStage.PAPER_PARSE, 0.35, "Requesting structured contributions from the LLM parser.")
                 llm_contributions = self.llm_client.extract_contributions(paper_document)
                 if llm_contributions:
+                    merged_contributions = (
+                        merge_contribution_sets(llm_contributions, heuristic_contributions)
+                        if heuristic_contributions
+                        else llm_contributions
+                    )
+                    llm_warnings = [*warnings, *parser_gap_warnings(paper_document, merged_contributions)]
                     if progress is not None:
                         progress(
                             JobStage.PAPER_PARSE,
                             1.0,
-                            f"Structured {len(llm_contributions)} contributions with the LLM parser.",
+                            f"Structured {len(merged_contributions)} contributions with the LLM parser.",
                         )
                     return ParseOutput(
-                        contributions=llm_contributions,
+                        contributions=merged_contributions,
                         mode=ProcessorMode.LLM,
-                        warnings=[],
+                        warnings=llm_warnings,
                     )
                 warnings.append("Paper parser received an empty llm response and fell back.")
             except Exception:
                 warnings.append("Paper parser fell back from llm to heuristic extraction.")
         if progress is not None:
             progress(JobStage.PAPER_PARSE, 0.7, "Running heuristic contribution extraction.")
-        contributions = infer_document_contributions(case_slug, paper_document)
-        if contributions:
+        if heuristic_contributions:
             if progress is not None:
                 progress(
                     JobStage.PAPER_PARSE,
                     1.0,
-                    f"Extracted {len(contributions)} contributions via heuristic parsing.",
+                    f"Extracted {len(heuristic_contributions)} contributions via heuristic parsing.",
                 )
             return ParseOutput(
-                contributions=contributions,
+                contributions=heuristic_contributions,
                 mode=ProcessorMode.HEURISTIC,
-                warnings=[*warnings, *parser_gap_warnings(paper_document, contributions)],
+                warnings=[*warnings, *parser_gap_warnings(paper_document, heuristic_contributions)],
             )
         fixture = load_golden_case(case_slug)
         if progress is not None:
@@ -1358,6 +1392,7 @@ class StrategyDrivenRepoTracer:
     repo_mirror: RepoMirror | None = None
     settings: Settings | None = None
     github_client: httpx.Client | None = None
+    llm_client: LLMClient | None = None
 
     def trace(
         self,
@@ -1481,6 +1516,18 @@ class StrategyDrivenRepoTracer:
         )
         warnings.extend(shape_warnings)
         candidates.extend(shape_candidates)
+        if self.llm_client is not None:
+            try:
+                llm_candidates = self.llm_client.suggest_base_repos(
+                    request_repo_url=request.repo_url,
+                    paper_document=paper_document,
+                    readme_text=metadata_output.readme_text,
+                    notes=metadata_output.notes,
+                    existing_candidates=dedupe_repo_candidates(candidates),
+                )
+                candidates.extend(llm_candidates)
+            except Exception:
+                warnings.append("Repo tracer skipped llm ancestry reasoning after heuristic candidate generation.")
         if progress is not None:
             progress(
                 JobStage.ANCESTRY_TRACE,
@@ -1666,6 +1713,12 @@ class LiveRepoDiffAnalyzer:
             diff_clusters.append(
                 DiffCluster(
                     id=f"D{index}",
+                    patch_id=stable_patch_id(
+                        cluster_state.label,
+                        cluster_state.change_type,
+                        *files,
+                        *(anchor.patch_id or "" for anchor in code_anchors),
+                    ),
                     label=cluster_state.label,
                     change_type=cluster_state.change_type,
                     files=files,
@@ -1878,6 +1931,7 @@ def build_default_analysis_service() -> AnalysisService:
             repo_metadata_provider=repo_tracer_provider,
             repo_mirror=repo_mirror,
             settings=settings,
+            llm_client=llm_client,
         ),
         diff_analyzer=diff_analyzer,
         contribution_mapper=FixtureContributionMapper(llm_client=llm_client),
