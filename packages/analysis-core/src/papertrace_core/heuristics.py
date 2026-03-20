@@ -8,6 +8,7 @@ from papertrace_core.models import (
     ContributionMapping,
     CoverageType,
     DiffCluster,
+    DiffCodeAnchor,
     PaperContribution,
     PaperDocument,
     PaperSection,
@@ -704,8 +705,25 @@ def rank_contribution_match(
     contribution: PaperContribution,
     diff_cluster: DiffCluster,
 ) -> tuple[int, str]:
+    anchor_haystack = " ".join(
+        " ".join(
+            [
+                anchor.file_path,
+                anchor.reason,
+                anchor.snippet,
+                anchor.original_snippet or "",
+            ]
+        )
+        for anchor in diff_cluster.code_anchors
+    ).lower()
     haystack = " ".join(
-        [diff_cluster.label, diff_cluster.summary, *diff_cluster.files, *diff_cluster.semantic_tags]
+        [
+            diff_cluster.label,
+            diff_cluster.summary,
+            *diff_cluster.files,
+            *diff_cluster.semantic_tags,
+            anchor_haystack,
+        ]
     ).lower()
     keyword_hits = [keyword for keyword in contribution.keywords if keyword.lower() in haystack]
     title_hits = sorted(token for token in tokenize(contribution.title) if token in haystack)
@@ -738,6 +756,8 @@ def rank_contribution_match(
         evidence_parts.append(f"step gaps: {', '.join(missing_steps[:2])}")
     if diff_cluster.semantic_tags:
         evidence_parts.append(f"semantic tags: {', '.join(diff_cluster.semantic_tags[:3])}")
+    if diff_cluster.code_anchors:
+        evidence_parts.append(f"code anchors: {len(diff_cluster.code_anchors)} snippets reviewed")
     evidence_parts.append(f"cluster files: {', '.join(diff_cluster.files[:2])}")
     evidence_parts.append(f"cluster type: {diff_cluster.change_type}")
     return score, "; ".join(evidence_parts)
@@ -772,6 +792,102 @@ def trace_contribution_steps(
         else:
             missing_steps.append(sentence_to_title(step))
     return supported_steps, missing_steps
+
+
+def anchor_review_tokens(anchor: DiffCodeAnchor) -> set[str]:
+    return tokenize(
+        " ".join(
+            [
+                anchor.file_path,
+                anchor.reason,
+                anchor.snippet,
+                anchor.original_snippet or "",
+                anchor.anchor_kind,
+            ]
+        )
+    )
+
+
+def extract_algorithmic_markers(contribution: PaperContribution) -> set[str]:
+    markers: set[str] = set()
+    source_values = [
+        contribution.title,
+        contribution.problem_solved or "",
+        contribution.baseline_difference or "",
+        *contribution.impl_hints,
+        *contribution.evidence_refs,
+    ]
+    interesting_tokens = {
+        token
+        for value in source_values
+        for token in tokenize(value)
+        if len(token) >= 5
+        and token
+        not in {
+            "introduce",
+            "present",
+            "method",
+            "paper",
+            "results",
+            "section",
+            "algorithm",
+            "figure",
+            "table",
+        }
+    }
+    markers.update(interesting_tokens)
+    return markers
+
+
+def trace_contribution_anchors(
+    contribution: PaperContribution,
+    diff_cluster: DiffCluster,
+) -> tuple[list[DiffCodeAnchor], list[str], float, float]:
+    if not diff_cluster.code_anchors:
+        return [], ["diff cluster does not expose code anchors"], 0.0, 0.0
+
+    contribution_tokens = tokenize(contribution.title) | set(contribution.keywords)
+    algorithmic_markers = extract_algorithmic_markers(contribution)
+    matched: list[tuple[int, DiffCodeAnchor]] = []
+    for anchor in diff_cluster.code_anchors:
+        anchor_tokens = anchor_review_tokens(anchor)
+        keyword_overlap = len(contribution_tokens & anchor_tokens)
+        algorithm_overlap = len(algorithmic_markers & anchor_tokens)
+        path_overlap = len(path_review_tokens(anchor.file_path) & contribution_tokens)
+        score = keyword_overlap * 3 + algorithm_overlap * 4 + path_overlap * 2
+        if score > 0:
+            matched.append((score, anchor))
+
+    matched.sort(
+        key=lambda item: (
+            item[0],
+            item[1].file_path,
+            item[1].start_line,
+        ),
+        reverse=True,
+    )
+    matched_anchors = [anchor for _, anchor in matched[:4]]
+
+    fidelity_notes: list[str] = []
+    if matched_anchors:
+        fidelity_notes.append(
+            "anchor-backed evidence: "
+            + ", ".join(f"{anchor.file_path}:{anchor.start_line}-{anchor.end_line}" for anchor in matched_anchors[:2])
+        )
+
+    contribution_token_budget = max(len(contribution_tokens), 1)
+    algorithmic_budget = max(len(algorithmic_markers), 1)
+    matched_token_union = (
+        set().union(*(anchor_review_tokens(anchor) for anchor in matched_anchors)) if matched_anchors else set()
+    )
+    snippet_fidelity = min(len(contribution_tokens & matched_token_union) / contribution_token_budget, 1.0)
+    formula_fidelity = min(len(algorithmic_markers & matched_token_union) / algorithmic_budget, 1.0)
+
+    if algorithmic_markers and formula_fidelity < 0.4:
+        fidelity_notes.append("algorithmic markers from the paper are only weakly reflected in matched code anchors")
+    if not matched_anchors:
+        fidelity_notes.append("no code anchor snippet strongly grounded this mapping")
+    return matched_anchors, fidelity_notes, snippet_fidelity, formula_fidelity
 
 
 def path_review_tokens(relative_path: str) -> set[str]:
@@ -826,10 +942,17 @@ def infer_mappings(
         score, selected_contribution = ranked_contributions[0]
         used_contribution_ids.add(selected_contribution.id)
         supported_steps, missing_steps = trace_contribution_steps(selected_contribution, diff_cluster)
+        matched_anchors, fidelity_notes, snippet_fidelity, formula_fidelity = trace_contribution_anchors(
+            selected_contribution,
+            diff_cluster,
+        )
         total_steps = max(len(extract_impl_steps(selected_contribution)), 1)
         step_coverage = len(supported_steps) / total_steps
-        confidence = min(0.6 + 0.035 * score + 0.12 * step_coverage, 0.97)
-        implementation_coverage = min(0.15 + 0.06 * score + 0.25 * step_coverage, 1.0)
+        confidence = min(0.55 + 0.03 * score + 0.12 * step_coverage + 0.12 * snippet_fidelity, 0.97)
+        implementation_coverage = min(
+            0.12 + 0.05 * score + 0.24 * step_coverage + 0.2 * snippet_fidelity + 0.14 * formula_fidelity,
+            1.0,
+        )
         missing_aspects: list[str] = []
         if missing_steps:
             missing_aspects.append(f"untraced implementation steps: {', '.join(missing_steps[:2])}")
@@ -839,12 +962,20 @@ def infer_mappings(
             token in diff_cluster.summary.lower() for token in tokenize(selected_contribution.baseline_difference)
         ):
             missing_aspects.append("baseline difference is not directly visible in the chosen diff cluster")
+        if formula_fidelity < 0.35:
+            missing_aspects.append("paper algorithm details are only weakly grounded in the matched code snippets")
         engineering_divergences: list[str] = []
         if diff_cluster.change_type.name == "MODIFIED_INFRA":
             engineering_divergences.append("implementation is exposed mostly through infrastructure-level changes")
         if diff_cluster.semantic_tags and not set(diff_cluster.semantic_tags) & set(selected_contribution.keywords):
             engineering_divergences.append(
                 "cluster semantics only partially align with the paper contribution vocabulary"
+            )
+        if matched_anchors and not any(
+            anchor.anchor_kind in {"addition", "modification"} for anchor in matched_anchors
+        ):
+            engineering_divergences.append(
+                "code evidence is dominated by contextual anchors rather than direct modifications"
             )
         if implementation_coverage >= 0.85:
             coverage_type = CoverageType.FULL
@@ -866,13 +997,18 @@ def infer_mappings(
                 evidence=(
                     f"Matched contribution '{selected_contribution.title}' to "
                     f"diff cluster '{diff_cluster.label}' via "
-                    f"{evidence_by_contribution_id[selected_contribution.id]}."
+                    f"{evidence_by_contribution_id[selected_contribution.id]}. "
+                    f"Snippet fidelity {snippet_fidelity:.2f}; formula fidelity {formula_fidelity:.2f}."
                 ),
                 completeness=completeness,
                 implementation_coverage=round(implementation_coverage, 2),
+                snippet_fidelity=round(snippet_fidelity, 2),
+                formula_fidelity=round(formula_fidelity, 2),
                 coverage_type=coverage_type,
                 missing_aspects=missing_aspects,
                 engineering_divergences=engineering_divergences,
+                fidelity_notes=fidelity_notes,
+                matched_anchor_patch_ids=[anchor.patch_id for anchor in matched_anchors if anchor.patch_id],
                 learning_entry_point=select_learning_entry_point(selected_contribution, diff_cluster),
                 reading_order=order_cluster_files_for_review(selected_contribution, diff_cluster),
             )

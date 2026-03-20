@@ -26,7 +26,13 @@ function sortCodeAnchors(diffCluster: DiffCluster | null, mapping: ContributionM
   }
   const anchors = diffCluster.code_anchors ?? [];
   const readingOrder = mapping?.reading_order ?? [];
+  const matchedAnchorIds = mapping?.matched_anchor_patch_ids ?? [];
   return [...anchors].sort((left, right) => {
+    const leftMatched = matchedAnchorIds.includes(left.patch_id ?? "") ? 0 : 1;
+    const rightMatched = matchedAnchorIds.includes(right.patch_id ?? "") ? 0 : 1;
+    if (leftMatched !== rightMatched) {
+      return leftMatched - rightMatched;
+    }
     const leftRank = readingOrder.indexOf(left.file_path);
     const rightRank = readingOrder.indexOf(right.file_path);
     return (leftRank === -1 ? 999 : leftRank) - (rightRank === -1 ? 999 : rightRank);
@@ -61,6 +67,7 @@ export function AnalysisEvidencePanel({ contribution, diffCluster, mapping }: An
   const reviewChecklist = buildReviewChecklist(contribution, diffCluster, mapping);
   const referenceBadges = contribution?.evidence_refs ?? [];
   const semanticTags = diffCluster?.semantic_tags ?? [];
+  const fidelityNotes = mapping?.fidelity_notes ?? [];
   const [selectedAnchorKey, setSelectedAnchorKey] = useState<string | null>(null);
   const firstAnchorKey = codeAnchors[0] ? anchorKey(codeAnchors[0]) : null;
 
@@ -158,6 +165,19 @@ export function AnalysisEvidencePanel({ contribution, diffCluster, mapping }: An
           {mapping ? (
             <>
               <p>{mapping.evidence}</p>
+              <div className="pill-row">
+                <span className="pill">snippet fidelity {mapping.snippet_fidelity.toFixed(2)}</span>
+                <span className="pill">formula fidelity {mapping.formula_fidelity.toFixed(2)}</span>
+              </div>
+              {fidelityNotes.length > 0 ? (
+                <div className="list">
+                  {fidelityNotes.map((note: string) => (
+                    <div className="item" key={note}>
+                      <p>{note}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <div className="checklist">
                 {reviewChecklist.map((item) => (
                   <div className="checklist-item" key={item}>

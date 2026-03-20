@@ -159,12 +159,26 @@ export interface components {
              * @default 0
              */
             implementation_coverage: number;
+            /**
+             * Snippet Fidelity
+             * @default 0
+             */
+            snippet_fidelity: number;
+            /**
+             * Formula Fidelity
+             * @default 0
+             */
+            formula_fidelity: number;
             /** @default PARTIAL */
             coverage_type: components["schemas"]["CoverageType"];
             /** Missing Aspects */
             missing_aspects?: string[];
             /** Engineering Divergences */
             engineering_divergences?: string[];
+            /** Fidelity Notes */
+            fidelity_notes?: string[];
+            /** Matched Anchor Patch Ids */
+            matched_anchor_patch_ids?: string[];
             /** Learning Entry Point */
             learning_entry_point?: string | null;
             /** Reading Order */

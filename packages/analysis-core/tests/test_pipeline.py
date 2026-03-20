@@ -9,6 +9,7 @@ from papertrace_core.models import (
     CoverageType,
     DiffChangeType,
     DiffCluster,
+    DiffCodeAnchor,
     JobStage,
     PaperContribution,
     PaperDocument,
@@ -547,6 +548,7 @@ def test_infer_mappings_traces_steps_and_review_order() -> None:
     )
     diff_cluster = DiffCluster(
         id="D7",
+        patch_id="cluster-patch-7",
         label="Sparse routing encoder",
         change_type=DiffChangeType.NEW_MODULE,
         files=["src/sparse_router.py", "src/train.py"],
@@ -554,6 +556,32 @@ def test_infer_mappings_traces_steps_and_review_order() -> None:
             "Sparse routing encoder inferred from src/sparse_router.py; bucketed as new_module because"
             " content includes routing encoder slots and local validation cache reuse."
         ),
+        code_anchors=[
+            DiffCodeAnchor(
+                patch_id="anchor-1",
+                file_path="src/sparse_router.py",
+                start_line=10,
+                end_line=24,
+                snippet=(
+                    "def build_routing_slots(documents, temperature):\n"
+                    "    sparse_slots = compress_documents_into_slots(documents)\n"
+                    "    return rerank_with_temperature(sparse_slots, temperature)\n"
+                ),
+                original_snippet=None,
+                reason="matched routing, slots, and temperature-scaled reranking logic",
+                anchor_kind="addition",
+            ),
+            DiffCodeAnchor(
+                patch_id="anchor-2",
+                file_path="src/train.py",
+                start_line=30,
+                end_line=36,
+                snippet="cached_slots = reuse_cached_slots(batch)\nreturn evaluate_with_cached_slots(cached_slots)\n",
+                original_snippet=None,
+                reason="matched cached slot reuse during local validation",
+                anchor_kind="modification",
+            ),
+        ],
         semantic_tags=["routing", "encoder", "cache"],
     )
 
@@ -564,3 +592,7 @@ def test_infer_mappings_traces_steps_and_review_order() -> None:
     assert mappings[0].reading_order[0] == "src/sparse_router.py"
     assert "untraced implementation steps:" in " ".join(mappings[0].missing_aspects)
     assert mappings[0].implementation_coverage > 0.5
+    assert mappings[0].snippet_fidelity > 0.4
+    assert mappings[0].formula_fidelity > 0.2
+    assert mappings[0].matched_anchor_patch_ids == ["anchor-1", "anchor-2"]
+    assert any("anchor-backed evidence:" in note for note in mappings[0].fidelity_notes)

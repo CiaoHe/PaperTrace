@@ -126,9 +126,13 @@ class ContributionMapping(BaseModel):
     evidence: str
     completeness: str
     implementation_coverage: float = 0.0
+    snippet_fidelity: float = 0.0
+    formula_fidelity: float = 0.0
     coverage_type: CoverageType = CoverageType.PARTIAL
     missing_aspects: list[str] = Field(default_factory=list)
     engineering_divergences: list[str] = Field(default_factory=list)
+    fidelity_notes: list[str] = Field(default_factory=list)
+    matched_anchor_patch_ids: list[str] = Field(default_factory=list)
     learning_entry_point: str | None = None
     reading_order: list[str] = Field(default_factory=list)
 
