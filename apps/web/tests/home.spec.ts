@@ -62,11 +62,14 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await expect(page.getByText("Runtime provenance")).toBeVisible();
   await expect(page.getByText("Paper fetch mode")).toBeVisible();
   await expect(page.getByText("strategy chain")).toBeVisible();
-  await expect(page.getByText("Evidence review board")).toBeVisible();
+  await expect(page.getByText("Review handoff")).toBeVisible();
   await expect(page.getByText("Lineage explorer")).toBeVisible();
   await page.getByRole("button", { name: "Signal rings" }).click();
   await expect(page.getByText("Review sequence")).toBeVisible();
   await page.getByRole("button", { name: "Hypothesis paths" }).click();
+  await page.getByRole("link", { name: "Open evidence workspace" }).click();
+  await expect(page).toHaveURL(/\/analyses\/.*\/evidence/);
+  await expect(page.getByText("Evidence review board")).toBeVisible();
   await expect(page.getByText("Annotation panel")).toBeVisible();
   await expect(page.getByText("Contribution mappings")).toBeVisible();
   await expect(page.getByText("D1 → C1").first()).toBeVisible();
@@ -74,7 +77,7 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await expect(page.getByTestId("monaco-evidence-viewer")).toBeVisible();
   await page.getByRole("button", { name: "Full cluster patch" }).click();
   await expect(page.getByRole("heading", { name: /full cluster patch/i })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Open job" }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: "Back to shell" })).toBeVisible();
 });
 
 test("uploads a PDF and renders pdf-file provenance", async ({ page }) => {
@@ -94,7 +97,8 @@ test("uploads a PDF and renders pdf-file provenance", async ({ page }) => {
   await page.getByRole("button", { name: "Analyze" }).click();
 
   await expect(page.getByText("Selected base repo")).toBeVisible({ timeout: 30000 });
-  await expect(page.getByText("C1 · Low-rank adaptation modules").first()).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText("Low-rank adaptation modules").first()).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText("Review handoff")).toBeVisible({ timeout: 30000 });
   await expect(
     page
       .locator(".item")

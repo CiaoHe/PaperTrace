@@ -18,7 +18,17 @@ trap cleanup EXIT
 mkdir -p .local
 cp -n .env.example .env >/dev/null 2>&1 || true
 
-PYTHONPATH="$PYTHONPATH_VALUE" CELERY_TASK_ALWAYS_EAGER=true DATABASE_URL="sqlite+pysqlite:///$PWD/.local/e2e.db" \
+PYTHONPATH="$PYTHONPATH_VALUE" \
+  CELERY_TASK_ALWAYS_EAGER=true \
+  DATABASE_URL="sqlite+pysqlite:///$PWD/.local/e2e.db" \
+  ENABLE_LIVE_BY_DEFAULT=false \
+  ENABLE_LIVE_PAPER_FETCH=false \
+  ENABLE_LIVE_REPO_TRACE=false \
+  ENABLE_LIVE_REPO_ANALYSIS=false \
+  GITHUB_TOKEN= \
+  LLM_BASE_URL= \
+  LLM_API_KEY= \
+  LLM_MODEL= \
   "$PYTHON_BIN" -m uvicorn papertrace_api.main:app --host 127.0.0.1 --port "$API_PORT" &
 API_PID=$!
 

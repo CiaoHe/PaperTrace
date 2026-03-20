@@ -48,6 +48,10 @@ select {
   margin: 0 auto;
 }
 
+.shell-wide {
+  max-width: 1480px;
+}
+
 .hero {
   display: grid;
   gap: 16px;
@@ -262,7 +266,7 @@ select {
 
 .result-band {
   display: grid;
-  grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 14px;
   align-items: flex-start;
 }
@@ -363,10 +367,46 @@ select {
   margin: 0;
 }
 
+.page-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: flex-start;
+}
+
+.page-head h2,
+.page-head p {
+  margin: 0;
+}
+
+.page-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .workbench-grid {
   display: grid;
   grid-template-columns: minmax(0, 280px) minmax(0, 1fr) minmax(0, 320px);
   gap: 14px;
+  align-items: flex-start;
+}
+
+.workbench-grid-summary {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+}
+
+.workbench-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.evidence-workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 300px) minmax(0, 1fr) minmax(320px, 360px);
+  gap: 16px;
   align-items: flex-start;
 }
 
@@ -411,6 +451,10 @@ select {
 .signal-chip strong,
 .signal-chip span {
   display: block;
+}
+
+.signal-chip.static {
+  cursor: default;
 }
 
 .lineage-card {
@@ -608,6 +652,11 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .page-head {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
   .result-hero,
   .section-head,
   .result-band {
@@ -615,11 +664,13 @@ select {
     display: grid;
   }
 
+  .workbench-preview-grid,
   .hero-metrics,
   .evidence-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .evidence-workspace-grid,
   .lineage-graph,
   .annotation-grid,
   .workbench-grid,

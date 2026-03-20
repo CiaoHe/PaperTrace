@@ -374,7 +374,11 @@ export function AnalysisForm() {
           </div>
         </div>
 
-        {result ? <AnalysisResultsWorkbench result={result} submittedRepoUrl={repoUrl} /> : null}
+        {result ? (
+          <div id={job ? `job-${job.id}` : undefined}>
+            <AnalysisResultsWorkbench jobId={job?.id ?? null} result={result} submittedRepoUrl={repoUrl} />
+          </div>
+        ) : null}
       </section>
     </div>
   );

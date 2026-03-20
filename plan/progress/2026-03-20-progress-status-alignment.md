@@ -180,6 +180,7 @@
   - The workbench now includes an annotation panel that ties paper claims, mapping evidence, semantic tags, line-anchored code snippets, and file reading order into a reviewer flow.
   - The annotation panel now includes a Monaco-based diff viewer backed by real old/new code anchors.
   - The Monaco reviewer now supports both focused anchor inspection and an aggregated full-cluster patch view, so reviewers can inspect an entire diff cluster without hopping snippet-by-snippet.
+  - The evidence-heavy reviewer flow now has a standalone evidence workspace route instead of being forced into the home result stack.
 - Evidence:
   - [analysis-form.tsx](/Users/kakusou/work/code/project/PaperTrace/apps/web/components/analysis-form.tsx)
   - [analysis-results-workbench.tsx](/Users/kakusou/work/code/project/PaperTrace/apps/web/components/analysis-results-workbench.tsx)
