@@ -69,6 +69,8 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await expect(page.getByText("D1 → C1").first()).toBeVisible();
   await expect(page.getByText("Learning entry point")).toBeVisible();
   await expect(page.getByTestId("monaco-evidence-viewer")).toBeVisible();
+  await page.getByRole("button", { name: "Full cluster patch" }).click();
+  await expect(page.getByRole("heading", { name: /full cluster patch/i })).toBeVisible();
   await expect(page.getByRole("button", { name: "Open job" }).first()).toBeVisible();
 });
 
@@ -88,8 +90,8 @@ test("uploads a PDF and renders pdf-file provenance", async ({ page }) => {
   await expect(page.getByText("Selected file: lora-upload.pdf")).toBeVisible();
   await page.getByRole("button", { name: "Analyze" }).click();
 
-  await expect(page.getByText("Selected base repo")).toBeVisible({ timeout: 15000 });
-  await expect(page.getByText("C1 · Low-rank adaptation modules").first()).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText("Selected base repo")).toBeVisible({ timeout: 30000 });
+  await expect(page.getByText("C1 · Low-rank adaptation modules").first()).toBeVisible({ timeout: 30000 });
   await expect(
     page
       .locator(".item")

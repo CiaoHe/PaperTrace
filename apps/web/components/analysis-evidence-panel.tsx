@@ -3,7 +3,7 @@
 import type { ContributionMapping, DiffCluster, DiffCodeAnchor, PaperContribution } from "@papertrace/contracts";
 import { useEffect, useState } from "react";
 
-import { AnalysisMonacoDiffViewer } from "@/components/analysis-monaco-diff-viewer";
+import { AnalysisMonacoDiffViewer, type MonacoReviewMode } from "@/components/analysis-monaco-diff-viewer";
 
 interface AnalysisEvidencePanelProps {
   contribution: PaperContribution | null;
@@ -69,11 +69,18 @@ export function AnalysisEvidencePanel({ contribution, diffCluster, mapping }: An
   const semanticTags = diffCluster?.semantic_tags ?? [];
   const fidelityNotes = mapping?.fidelity_notes ?? [];
   const [selectedAnchorKey, setSelectedAnchorKey] = useState<string | null>(null);
+  const [reviewMode, setReviewMode] = useState<MonacoReviewMode>("anchor");
   const firstAnchorKey = codeAnchors[0] ? anchorKey(codeAnchors[0]) : null;
 
   useEffect(() => {
     setSelectedAnchorKey(firstAnchorKey);
   }, [firstAnchorKey]);
+
+  useEffect(() => {
+    if (diffCluster) {
+      setReviewMode("anchor");
+    }
+  }, [diffCluster]);
 
   const selectedAnchor =
     codeAnchors.find((anchor) => anchorKey(anchor) === selectedAnchorKey) ?? codeAnchors[0] ?? null;
@@ -133,6 +140,24 @@ export function AnalysisEvidencePanel({ contribution, diffCluster, mapping }: An
               ) : null}
               <div className="code-anchor-browser">
                 <div className="code-anchor-list">
+                  <div className="actions" style={{ marginBottom: 12, position: "relative", zIndex: 1 }}>
+                    <button
+                      className={`button secondary${reviewMode === "anchor" ? " active" : ""}`}
+                      onClick={() => setReviewMode("anchor")}
+                      style={{ position: "relative", zIndex: 1 }}
+                      type="button"
+                    >
+                      Focused anchor
+                    </button>
+                    <button
+                      className={`button secondary${reviewMode === "cluster" ? " active" : ""}`}
+                      onClick={() => setReviewMode("cluster")}
+                      style={{ position: "relative", zIndex: 1 }}
+                      type="button"
+                    >
+                      Full cluster patch
+                    </button>
+                  </div>
                   {codeAnchors.length > 0 ? (
                     codeAnchors.map((anchor, index) => (
                       <button
@@ -151,7 +176,7 @@ export function AnalysisEvidencePanel({ contribution, diffCluster, mapping }: An
                     <p className="muted">No code anchors available for the selected cluster yet.</p>
                   )}
                 </div>
-                <AnalysisMonacoDiffViewer anchor={selectedAnchor} />
+                <AnalysisMonacoDiffViewer anchor={selectedAnchor} cluster={diffCluster} mode={reviewMode} />
               </div>
             </>
           ) : (

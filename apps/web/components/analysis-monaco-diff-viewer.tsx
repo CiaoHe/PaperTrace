@@ -1,14 +1,18 @@
 "use client";
 
-import type { DiffCodeAnchor } from "@papertrace/contracts";
+import type { DiffCluster, DiffCodeAnchor } from "@papertrace/contracts";
 import dynamic from "next/dynamic";
 
 const DiffEditor = dynamic(async () => (await import("@monaco-editor/react")).DiffEditor, {
   ssr: false,
 });
 
+export type MonacoReviewMode = "anchor" | "cluster";
+
 interface AnalysisMonacoDiffViewerProps {
   anchor: DiffCodeAnchor | null;
+  cluster: DiffCluster | null;
+  mode: MonacoReviewMode;
 }
 
 function languageForFile(filePath: string): string {
@@ -30,8 +34,51 @@ function languageForFile(filePath: string): string {
   return "plaintext";
 }
 
-export function AnalysisMonacoDiffViewer({ anchor }: AnalysisMonacoDiffViewerProps) {
-  if (!anchor) {
+function buildClusterPatchDocument(cluster: DiffCluster): { original: string; modified: string } {
+  const anchors = cluster.code_anchors ?? [];
+  if (anchors.length === 0) {
+    return {
+      original: "# No original snippets available for this cluster.",
+      modified: "# No modified snippets available for this cluster.",
+    };
+  }
+
+  const originalBlocks: string[] = [];
+  const modifiedBlocks: string[] = [];
+  for (const [index, anchor] of anchors.entries()) {
+    const heading = [
+      `# ${index + 1}. ${anchor.file_path}`,
+      `kind=${anchor.anchor_kind}`,
+      `patch=${anchor.patch_id ?? "n/a"}`,
+      `range=${anchor.start_line}-${anchor.end_line}`,
+    ].join(" | ");
+    const originalRange =
+      anchor.original_start_line && anchor.original_end_line
+        ? `${anchor.original_start_line}-${anchor.original_end_line}`
+        : "n/a";
+
+    originalBlocks.push(
+      [heading, `# original=${originalRange}`, anchor.original_snippet ?? "# no original snippet", ""].join("\n"),
+    );
+    modifiedBlocks.push([heading, `# reason=${anchor.reason}`, anchor.snippet, ""].join("\n"));
+  }
+
+  return {
+    original: originalBlocks.join("\n"),
+    modified: modifiedBlocks.join("\n"),
+  };
+}
+
+export function AnalysisMonacoDiffViewer({ anchor, cluster, mode }: AnalysisMonacoDiffViewerProps) {
+  if (mode === "cluster" && !cluster) {
+    return (
+      <div className="monaco-shell empty" data-testid="monaco-evidence-viewer">
+        <p className="muted">Select a diff cluster to open the full cluster patch view.</p>
+      </div>
+    );
+  }
+
+  if (mode === "anchor" && !anchor) {
     return (
       <div className="monaco-shell empty" data-testid="monaco-evidence-viewer">
         <p className="muted">Select a code anchor to open the diff viewer.</p>
@@ -39,8 +86,11 @@ export function AnalysisMonacoDiffViewer({ anchor }: AnalysisMonacoDiffViewerPro
     );
   }
 
-  const originalValue = anchor.original_snippet ?? "";
-  const modifiedValue = anchor.snippet;
+  const originalValue =
+    mode === "cluster" && cluster ? buildClusterPatchDocument(cluster).original : (anchor?.original_snippet ?? "");
+  const modifiedValue =
+    mode === "cluster" && cluster ? buildClusterPatchDocument(cluster).modified : (anchor?.snippet ?? "");
+  const language = mode === "cluster" ? "plaintext" : languageForFile(anchor?.file_path ?? "");
 
   return (
     <div className="monaco-shell" data-testid="monaco-evidence-viewer">
@@ -48,21 +98,25 @@ export function AnalysisMonacoDiffViewer({ anchor }: AnalysisMonacoDiffViewerPro
         <div>
           <small>Monaco diff viewer</small>
           <h4>
-            {anchor.file_path}:{anchor.start_line}-{anchor.end_line}
+            {mode === "cluster" && cluster
+              ? `${cluster.id} · full cluster patch`
+              : `${anchor?.file_path ?? "unknown"}:${anchor?.start_line ?? 0}-${anchor?.end_line ?? 0}`}
           </h4>
         </div>
-        <strong>{anchor.anchor_kind}</strong>
+        <strong>{mode === "cluster" ? `${cluster?.code_anchors?.length ?? 0} anchors` : anchor?.anchor_kind}</strong>
       </div>
       <p className="muted">
-        original{" "}
-        {anchor.original_start_line && anchor.original_end_line
-          ? `${anchor.original_start_line}-${anchor.original_end_line}`
-          : "n/a"}{" "}
-        {"->"} current {anchor.start_line}-{anchor.end_line}
+        {mode === "cluster" && cluster
+          ? "Aggregated patch review surface across all code anchors in the selected cluster."
+          : `original ${
+              anchor?.original_start_line && anchor?.original_end_line
+                ? `${anchor.original_start_line}-${anchor.original_end_line}`
+                : "n/a"
+            } -> current ${anchor?.start_line ?? 0}-${anchor?.end_line ?? 0}`}
       </p>
       <DiffEditor
         height="280px"
-        language={languageForFile(anchor.file_path)}
+        language={language}
         options={{
           minimap: { enabled: false },
           readOnly: true,
