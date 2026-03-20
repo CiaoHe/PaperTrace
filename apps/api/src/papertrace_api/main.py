@@ -74,16 +74,13 @@ async def build_analysis_request_from_multipart(request: Request) -> AnalysisReq
     uploaded_file = paper_file if isinstance(paper_file, UploadFile) else None
 
     if uploaded_file is not None:
-        if (
-            multipart_payload.paper_input is not None
-            and multipart_payload.paper_input.source_kind != PaperSourceKind.PDF_FILE
-        ):
+        if multipart_payload.paper_input is not None and multipart_payload.paper_input.source_kind != "pdf_file":
             raise ValueError("multipart paper_input.source_kind must be pdf_file when paper_file is provided")
         resolved_paper_source = await persist_uploaded_pdf(uploaded_file, settings)
     elif multipart_payload.paper_input is not None:
-        if multipart_payload.paper_input.source_kind == PaperSourceKind.PDF_FILE:
+        if multipart_payload.paper_input.source_kind == "pdf_file":
             raise ValueError("paper_input.source_kind=pdf_file requires paper_file upload")
-        resolved_paper_source = normalize_paper_source(multipart_payload.paper_input.source_ref)
+        resolved_paper_source = normalize_paper_source(str(multipart_payload.paper_input.source_ref))
     else:
         resolved_paper_source = normalize_paper_source(str(multipart_payload.paper_source or ""))
 

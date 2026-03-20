@@ -103,6 +103,7 @@ class Settings(BaseSettings):
     llm_paper_parse_max_sections: int = Field(default=8, alias="LLM_PAPER_PARSE_MAX_SECTIONS")
     llm_paper_parse_section_chars: int = Field(default=3500, alias="LLM_PAPER_PARSE_SECTION_CHARS")
     llm_paper_parse_total_chars: int = Field(default=14000, alias="LLM_PAPER_PARSE_TOTAL_CHARS")
+    llm_paper_parse_max_batches: int = Field(default=3, alias="LLM_PAPER_PARSE_MAX_BATCHES")
 
     def use_live_paper_fetch(self) -> bool:
         return self.enable_live_paper_fetch or self.enable_live_by_default

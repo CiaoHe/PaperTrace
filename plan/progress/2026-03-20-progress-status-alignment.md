@@ -14,7 +14,7 @@
 
 - Verified locally during this review:
   - `make lint` passed
-  - `make test` passed with `72 passed, 6 deselected`
+  - `make test` passed with `77 passed, 6 deselected`
   - `make e2e` passed with `3 passed`
 - Previously verified in the current implementation cycle:
   - `make lint` passed
@@ -83,6 +83,7 @@
   - Optional LLM parsing now uses a section-aware structured extraction prompt instead of a single raw paper-text dump.
   - LLM contribution payloads are normalized into the richer `PaperContribution` schema and then merged with heuristic findings so implementation hints and reference markers are preserved.
   - LLM parsing input is now budgeted by prioritized sections, per-section truncation, and total prompt size caps to stay practical on local development setups.
+  - LLM parsing now supports section-batched multi-pass extraction so longer papers can be covered across several prioritized windows instead of a single truncated request.
 - Evidence:
   - [paper_sources.py](/Users/kakusou/work/code/project/PaperTrace/packages/analysis-core/src/papertrace_core/paper_sources.py)
   - [heuristics.py](/Users/kakusou/work/code/project/PaperTrace/packages/analysis-core/src/papertrace_core/heuristics.py)
@@ -90,7 +91,7 @@
   - [llm.py](/Users/kakusou/work/code/project/PaperTrace/packages/analysis-core/src/papertrace_core/llm.py)
 - Remaining:
   - LLM parsing is still optional and not benchmark-tuned against a real paper evaluation set.
-  - Arbitrary long papers still rely on prioritized section selection rather than a full multi-pass paper parser.
+  - The parser now spans longer papers through section batches, but it still does not build a fuller document graph or iterative global refinement pass.
 
 ### Repo Ancestry Tracing
 
@@ -105,6 +106,7 @@
   - Dependency archaeology now scans dependency files and submodule config for ancestry hints.
   - Fossil detection now inspects first-commit evidence.
   - GitHub code search for unique symbols is now implemented as an optional remote strategy.
+  - Temporal-topic GitHub repository search now exists as an optional remote strategy that uses paper-topic phrases and paper-time priors.
   - Directory and dependency shape similarity now exists as a distinct strategy.
   - Optional LLM ancestry reasoning now acts as a late-stage cascade ring that can propose additional upstream candidates from paper context, repo metadata, and current heuristic candidates.
   - Ranked candidates with confidence and evidence are returned.
@@ -114,7 +116,7 @@
   - [llm.py](/Users/kakusou/work/code/project/PaperTrace/packages/analysis-core/src/papertrace_core/llm.py)
 - Remaining:
   - Strategy quality still depends on a small built-in known-upstream alias map.
-  - Author graph, citation graph, and temporal-topic search are not implemented.
+  - Author graph and citation graph search are not implemented.
   - Initial commit ancestry analysis is still lightweight rather than a fuller ancestry diff.
   - The current fingerprint approach is still a lightweight overlap heuristic, not the fuller fingerprint library described in `AGENTS.md`.
   - The cascade now reaches an LLM reasoning ring, but still lacks richer graph-based search rings before that final inference step.
@@ -134,12 +136,12 @@
   - Code evidence anchors now carry old/new snippet payloads and old/new line ranges suitable for a diff viewer.
   - Live diff output now carries stable `patch_id` values for both clusters and code anchors so review surfaces can preserve identity beyond positional ordering.
   - Related clusters are surfaced through `related_cluster_ids`.
+  - Live diff analysis now returns empty cluster sets with explicit warnings on clone failure or no-op results instead of injecting fixture diff clusters into real runs.
 - Evidence:
   - [services.py](/Users/kakusou/work/code/project/PaperTrace/packages/analysis-core/src/papertrace_core/services.py)
   - [models.py](/Users/kakusou/work/code/project/PaperTrace/packages/analysis-core/src/papertrace_core/models.py)
   - [settings.py](/Users/kakusou/work/code/project/PaperTrace/packages/analysis-core/src/papertrace_core/settings.py)
 - Remaining:
-  - There is still fixture fallback on clone failure or empty live diff output.
   - The analyzer still stops short of richer diff metadata such as inline token spans.
 
 ### Contribution Mapping
@@ -304,7 +306,7 @@
 - Notes:
   - The parser is no longer just a thin heuristic layer over fetched text.
   - Section-specialized extraction, merge logic, and gap detection are now present.
-  - The remaining gap is the lack of a stronger global refinement layer and more robust non-golden quality.
+  - The remaining gap is now a stronger global refinement layer and better non-golden quality, not single-window truncation.
 
 ### 3. Repo Tracer De-Fixturing
 
@@ -312,8 +314,8 @@
 - Current alignment: `confirmed with caveat`
 - Notes:
   - The main path is no longer just golden-fixture candidate replay.
-  - The tracer now includes framework-signature, dependency-archaeology, fossil, shape-similarity, code-reference, and fingerprint layers.
-  - It is still not a mature cascade-search engine because code search, graph strategies, and broader registries are missing.
+  - The tracer now includes framework-signature, dependency-archaeology, fossil, temporal-topic, shape-similarity, code-reference, and fingerprint layers.
+  - It is still not a mature cascade-search engine because author/citation graph strategies and broader registries are missing.
 
 ### 4. Live Diff As The Default Analysis Path
 
@@ -322,7 +324,7 @@
 - Notes:
   - Default local config now prefers live analysis through `ENABLE_LIVE_BY_DEFAULT=true` in `.env.example`.
   - The existence of a live path is real.
-  - The analyzer now has semantic tags and lightweight cross-file grouping, but it still falls short of a true semantic diff engine.
+  - The analyzer now has semantic tags, lightweight cross-file grouping, and honest empty-result handling, but it still falls short of a true semantic diff engine.
 
 ### 5. Evidence-Oriented Contribution Mapping
 

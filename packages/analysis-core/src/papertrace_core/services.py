@@ -7,7 +7,9 @@ import subprocess
 import tomllib
 from collections import Counter
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import httpx
 
@@ -76,6 +78,7 @@ STRATEGY_PRIORITY: dict[str, int] = {
     "metadata_url": 4,
     "paper_mention": 3,
     "dependency_archaeology": 3,
+    "temporal_topic_search": 3,
     "github_code_search": 3,
     "shape_similarity": 3,
     "llm_reasoning": 2,
@@ -128,6 +131,28 @@ GENERIC_SYMBOL_NAMES = {
     "load",
     "save",
     "evaluate",
+}
+TOPIC_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "attention",
+    "for",
+    "from",
+    "into",
+    "language",
+    "large",
+    "learning",
+    "models",
+    "model",
+    "of",
+    "on",
+    "paper",
+    "system",
+    "the",
+    "to",
+    "using",
+    "with",
 }
 
 
@@ -683,6 +708,17 @@ def unique_repo_urls(repo_urls: list[str]) -> list[str]:
     return list(dict.fromkeys(repo_urls))
 
 
+def inferred_paper_timestamp(request: AnalysisRequest) -> datetime | None:
+    matched = re.search(r"(\d{2})(\d{2})\.\d{4,5}", request.paper_source)
+    if matched is None:
+        return None
+    year = 2000 + int(matched.group(1))
+    month = int(matched.group(2))
+    if month < 1 or month > 12:
+        return None
+    return datetime(year=year, month=month, day=1, tzinfo=UTC)
+
+
 def known_upstream_repo_urls() -> list[str]:
     return unique_repo_urls(list(KNOWN_UPSTREAM_ALIAS_MAP.values()))
 
@@ -743,6 +779,27 @@ def extract_alias_repo_urls(text: str) -> list[str]:
         if text_contains_alias(haystack, alias):
             repo_urls.append(repo_url)
     return dedupe_preserving_order(repo_urls)
+
+
+def build_temporal_topic_queries(
+    paper_document: PaperDocument,
+    contributions: list[PaperContribution],
+) -> list[str]:
+    query_seeds = [paper_document.title, *(contribution.title for contribution in contributions[:4])]
+    if paper_document.abstract.strip():
+        query_seeds.append(paper_document.abstract)
+
+    phrases: list[str] = []
+    for seed in query_seeds:
+        tokens = [
+            token
+            for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9+-]{1,}", seed)
+            if token.lower() not in TOPIC_STOPWORDS and (len(token) >= 3 or any(char.isdigit() for char in token))
+        ]
+        if len(tokens) < 2:
+            continue
+        phrases.append(" ".join(tokens[:4]))
+    return dedupe_preserving_order(phrases)[:4]
 
 
 def extract_dependency_names(raw_value: str) -> list[str]:
@@ -1272,6 +1329,91 @@ def build_github_code_search_candidates(
     return dedupe_repo_candidates(candidates), warnings
 
 
+def build_temporal_topic_candidates(
+    request: AnalysisRequest,
+    paper_document: PaperDocument,
+    contributions: list[PaperContribution],
+    settings: Settings | None,
+    client: httpx.Client | None = None,
+) -> tuple[list[BaseRepoCandidate], list[str]]:
+    if settings is None:
+        return [], []
+
+    queries = build_temporal_topic_queries(paper_document, contributions)
+    if not queries:
+        return [], []
+
+    close_client = client is None
+    http_client = client or httpx.Client(timeout=settings.github_timeout_seconds)
+    headers = {"Accept": "application/vnd.github+json"}
+    if settings.github_token:
+        headers["Authorization"] = f"Bearer {settings.github_token}"
+
+    paper_timestamp = inferred_paper_timestamp(request)
+    repo_matches: dict[str, dict[str, object]] = {}
+    warnings: list[str] = []
+    try:
+        endpoint = f"{settings.github_api_base_url.rstrip('/')}/search/repositories"
+        for phrase in queries:
+            try:
+                response = http_client.get(
+                    endpoint,
+                    headers=headers,
+                    params={
+                        "q": f'"{phrase}" in:name,description,readme language:Python',
+                        "per_page": 5,
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                warnings.append(f"Repo tracer skipped temporal topic query {phrase}: {exc}")
+                continue
+
+            for item in payload.get("items", []):
+                html_url = item.get("html_url")
+                if not isinstance(html_url, str):
+                    continue
+                try:
+                    repo_url = normalize_repo_url(html_url)
+                except ValueError:
+                    continue
+                if repo_url == request.repo_url:
+                    continue
+                entry = repo_matches.setdefault(repo_url, {"phrases": [], "created_at": None})
+                entry["phrases"] = dedupe_preserving_order([*cast(list[str], entry["phrases"]), phrase])
+                created_at = item.get("created_at")
+                if isinstance(created_at, str):
+                    try:
+                        entry["created_at"] = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    except ValueError:
+                        pass
+    finally:
+        if close_client:
+            http_client.close()
+
+    candidates: list[BaseRepoCandidate] = []
+    for repo_url, match_data in repo_matches.items():
+        phrases = cast(list[str], match_data["phrases"])
+        created_at = cast(datetime | None, match_data["created_at"])
+        predates_paper = paper_timestamp is not None and created_at is not None and created_at <= paper_timestamp
+        confidence = min(0.62 + 0.05 * len(phrases) + (0.08 if predates_paper else 0.0), 0.9)
+        evidence = (
+            f"GitHub repository search matched paper topics {', '.join(phrases[:3])} and the repo predates the paper."
+            if predates_paper
+            else f"GitHub repository search matched paper topics {', '.join(phrases[:3])}."
+        )
+        candidates.append(
+            BaseRepoCandidate(
+                repo_url=repo_url,
+                strategy="temporal_topic_search",
+                confidence=round(confidence, 2),
+                evidence=evidence,
+            )
+        )
+    return dedupe_repo_candidates(candidates), warnings
+
+
 def changed_file_link_reasons(left: ChangedFile, right: ChangedFile) -> list[str]:
     if left.change_type != right.change_type:
         return []
@@ -1402,7 +1544,6 @@ class StrategyDrivenRepoTracer:
         *,
         progress: StageProgressCallback | None = None,
     ) -> TraceOutput:
-        del contributions
         case_slug = detect_case_slug(request)
         golden = load_golden_case(case_slug)
         if progress is not None:
@@ -1466,6 +1607,15 @@ class StrategyDrivenRepoTracer:
         )
         warnings.extend(github_code_search_warnings)
         candidates.extend(github_code_search_candidates)
+        temporal_topic_candidates, temporal_topic_warnings = build_temporal_topic_candidates(
+            request,
+            paper_document,
+            contributions,
+            self.settings,
+            client=self.github_client,
+        )
+        warnings.extend(temporal_topic_warnings)
+        candidates.extend(temporal_topic_candidates)
         code_reference_candidates, code_reference_warnings = build_code_reference_candidates(
             request,
             self.repo_mirror,
@@ -1482,6 +1632,7 @@ class StrategyDrivenRepoTracer:
                 *[candidate.repo_url for candidate in metadata_url_candidates],
                 *[candidate.repo_url for candidate in dependency_candidates],
                 *[candidate.repo_url for candidate in github_code_search_candidates],
+                *[candidate.repo_url for candidate in temporal_topic_candidates],
                 *[candidate.repo_url for candidate in code_reference_candidates],
                 *extract_github_repo_urls(metadata_output.readme_text),
                 *extract_github_repo_urls(metadata_output.notes),
@@ -1594,7 +1745,6 @@ class LiveRepoDiffAnalyzer:
         *,
         progress: StageProgressCallback | None = None,
     ) -> DiffOutput:
-        fixture = load_golden_case(detect_case_slug(request))
         try:
             if progress is not None:
                 progress(JobStage.DIFF_ANALYZE, 0.1, "Preparing shallow clones for base and target repositories.")
@@ -1606,12 +1756,12 @@ class LiveRepoDiffAnalyzer:
                 progress(JobStage.DIFF_ANALYZE, 0.4, "Loaded repository snapshots and started change discovery.")
         except RepoAccessError as exc:
             if progress is not None:
-                progress(JobStage.DIFF_ANALYZE, 1.0, "Repo diff failed; returning fixture diff clusters.")
+                progress(JobStage.DIFF_ANALYZE, 1.0, "Repo diff failed; returning an empty live diff result.")
             return DiffOutput(
-                diff_clusters=fixture.diff_clusters,
-                mode=ProcessorMode.FIXTURE,
+                diff_clusters=[],
+                mode=ProcessorMode.HEURISTIC,
                 warnings=[
-                    "Diff analyzer fell back to fixture diff clusters.",
+                    "Diff analyzer could not prepare live repositories and returned no diff clusters.",
                     str(exc),
                 ],
             )
@@ -1644,12 +1794,12 @@ class LiveRepoDiffAnalyzer:
 
         if not changed_files:
             if progress is not None:
-                progress(JobStage.DIFF_ANALYZE, 1.0, "No meaningful diffs found; returning fixture diff clusters.")
+                progress(JobStage.DIFF_ANALYZE, 1.0, "No meaningful live diffs found after repository filtering.")
             return DiffOutput(
-                diff_clusters=fixture.diff_clusters,
-                mode=ProcessorMode.FIXTURE,
+                diff_clusters=[],
+                mode=ProcessorMode.HEURISTIC,
                 warnings=[
-                    ("Diff analyzer found no meaningful tracked-file changes and fell back to fixture diff clusters."),
+                    "Diff analyzer found no meaningful tracked-file changes after filtering.",
                 ],
             )
 

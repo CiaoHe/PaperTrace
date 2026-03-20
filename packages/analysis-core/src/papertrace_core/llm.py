@@ -7,6 +7,7 @@ from typing import Any
 
 from openai import OpenAI
 
+from papertrace_core.heuristics import merge_contribution_sets
 from papertrace_core.inputs import normalize_repo_url
 from papertrace_core.models import (
     BaseRepoCandidate,
@@ -122,6 +123,68 @@ def _build_llm_parse_sections(
     return [("Body", fallback_text)] if fallback_text else []
 
 
+def _build_llm_parse_batches(
+    paper_document: PaperDocument,
+    *,
+    max_sections: int,
+    section_char_limit: int,
+    total_char_limit: int,
+    max_batches: int,
+) -> list[list[tuple[str, str]]]:
+    if max_batches <= 1:
+        sections = _build_llm_parse_sections(
+            paper_document,
+            max_sections=max_sections,
+            section_char_limit=section_char_limit,
+            total_char_limit=total_char_limit,
+        )
+        return [sections] if sections else []
+
+    ranked_sections: list[tuple[int, str, str]] = []
+    if paper_document.abstract.strip():
+        ranked_sections.append((SECTION_KIND_PRIORITY["abstract"], "Abstract", paper_document.abstract.strip()))
+    for section in paper_document.sections:
+        text = section.text.strip()
+        if not text:
+            continue
+        ranked_sections.append((_section_priority(section.heading), section.heading.strip() or "Untitled", text))
+
+    if not ranked_sections and paper_document.text.strip():
+        paragraphs = [part.strip() for part in SECTION_SPLIT_RE.split(paper_document.text) if part.strip()]
+        for index, paragraph in enumerate(paragraphs, start=1):
+            ranked_sections.append((1, f"Body chunk {index}", paragraph))
+
+    sorted_sections = sorted(
+        ranked_sections,
+        key=lambda item: (item[0], len(item[2])),
+        reverse=True,
+    )
+    batches: list[list[tuple[str, str]]] = []
+    current_batch: list[tuple[str, str]] = []
+    consumed_chars = 0
+
+    for _, heading, text in sorted_sections:
+        trimmed_text = _trim_text(text, min(section_char_limit, total_char_limit))
+        if not trimmed_text:
+            continue
+        would_overflow = current_batch and (
+            len(current_batch) >= max_sections or consumed_chars + len(trimmed_text) > total_char_limit
+        )
+        if would_overflow:
+            batches.append(current_batch)
+            if len(batches) >= max_batches:
+                return batches
+            current_batch = []
+            consumed_chars = 0
+        current_batch.append((heading, trimmed_text))
+        consumed_chars += len(trimmed_text)
+
+    if current_batch and len(batches) < max_batches:
+        batches.append(current_batch)
+
+    return batches
+
+
 def _normalize_contribution_item(item: dict[str, Any], index: int) -> PaperContribution:
     title = str(item.get("title") or "").strip()
     if not title:
@@ -223,14 +286,17 @@ class LLMClient:
     paper_parse_max_sections: int = 8
     paper_parse_section_chars: int = 3500
     paper_parse_total_chars: int = 14000
+    paper_parse_max_batches: int = 3
 
-    def extract_contributions(self, paper_document: PaperDocument) -> list[PaperContribution]:
-        sections = _build_llm_parse_sections(
-            paper_document,
-            max_sections=self.paper_parse_max_sections,
-            section_char_limit=self.paper_parse_section_chars,
-            total_char_limit=self.paper_parse_total_chars,
-        )
+    def _extract_contribution_batch(
+        self,
+        paper_document: PaperDocument,
+        *,
+        sections: list[tuple[str, str]],
+        batch_index: int,
+        batch_count: int,
+    ) -> list[PaperContribution]:
+        batch_label = f"Section batch {batch_index} of {batch_count}.\n" if batch_count > 1 else ""
         sections_payload = "\n\n".join(f"## Section: {heading}\n{text}" for heading, text in sections)
         prompt = (
             "Extract the concrete technical contributions from the paper context below as JSON only.\n"
@@ -247,6 +313,7 @@ class LLMClient:
             "- evidence_refs\n"
             "- implementation_complexity\n\n"
             f"Title: {paper_document.title}\n"
+            f"{batch_label}"
             f"Structured context:\n{sections_payload}\n"
         )
         response = self.client.chat.completions.create(
@@ -265,6 +332,31 @@ class LLMClient:
         content = response.choices[0].message.content or "[]"
         payload = _extract_json_block(content)
         return _normalize_contribution_payload(payload)
+
+    def extract_contributions(self, paper_document: PaperDocument) -> list[PaperContribution]:
+        batches = _build_llm_parse_batches(
+            paper_document,
+            max_sections=self.paper_parse_max_sections,
+            section_char_limit=self.paper_parse_section_chars,
+            total_char_limit=self.paper_parse_total_chars,
+            max_batches=self.paper_parse_max_batches,
+        )
+        merged_contributions: list[PaperContribution] = []
+        for index, sections in enumerate(batches, start=1):
+            batch_contributions = self._extract_contribution_batch(
+                paper_document,
+                sections=sections,
+                batch_index=index,
+                batch_count=len(batches),
+            )
+            if not batch_contributions:
+                continue
+            merged_contributions = (
+                merge_contribution_sets(merged_contributions, batch_contributions)
+                if merged_contributions
+                else batch_contributions
+            )
+        return merged_contributions
 
     def suggest_base_repos(
         self,
@@ -359,4 +451,5 @@ def build_llm_client(settings: Settings) -> LLMClient | None:
         paper_parse_max_sections=settings.llm_paper_parse_max_sections,
         paper_parse_section_chars=settings.llm_paper_parse_section_chars,
         paper_parse_total_chars=settings.llm_paper_parse_total_chars,
+        paper_parse_max_batches=settings.llm_paper_parse_max_batches,
     )

@@ -266,6 +266,88 @@ def test_live_repo_diff_analyzer_filters_docs_and_lockfiles(
     assert result.diff_clusters[0].code_anchors[0].original_snippet is not None
 
 
+def test_live_repo_diff_analyzer_returns_empty_result_when_no_meaningful_changes_exist(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    base_repo = tmp_path / "base-empty"
+    target_repo = tmp_path / "target-empty"
+    init_git_repo(
+        base_repo,
+        {
+            "src/core.py": "def train():\n    return 'base'\n",
+        },
+    )
+    init_git_repo(
+        target_repo,
+        {
+            "src/core.py": "def train():\n    return 'base'\n",
+        },
+    )
+
+    analyzer = LiveRepoDiffAnalyzer(
+        repo_mirror=StaticRepoMirror(
+            {
+                "https://github.com/example/base-empty": base_repo,
+                "https://github.com/example/target-empty": target_repo,
+            }
+        ),
+        settings=repo_settings,
+    )
+    result = analyzer.analyze(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2106.09685 LoRA",
+            repo_url="https://github.com/example/target-empty",
+        ),
+        BaseRepoCandidate(
+            repo_url="https://github.com/example/base-empty",
+            strategy="readme_declaration",
+            confidence=0.9,
+            evidence="test",
+        ),
+        [],
+    )
+
+    assert result.mode == ProcessorMode.HEURISTIC
+    assert result.diff_clusters == []
+    assert "no meaningful tracked-file changes" in result.warnings[0].lower()
+
+
+def test_live_repo_diff_analyzer_returns_empty_result_when_repo_prepare_fails(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    base_repo = tmp_path / "base-missing"
+    init_git_repo(
+        base_repo,
+        {
+            "src/core.py": "def train():\n    return 'base'\n",
+        },
+    )
+
+    analyzer = LiveRepoDiffAnalyzer(
+        repo_mirror=StaticRepoMirror({"https://github.com/example/base-missing": base_repo}),
+        settings=repo_settings,
+    )
+    result = analyzer.analyze(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2106.09685 LoRA",
+            repo_url="https://github.com/example/target-missing",
+        ),
+        BaseRepoCandidate(
+            repo_url="https://github.com/example/base-missing",
+            strategy="readme_declaration",
+            confidence=0.9,
+            evidence="test",
+        ),
+        [],
+    )
+
+    assert result.mode == ProcessorMode.HEURISTIC
+    assert result.diff_clusters == []
+    assert "returned no diff clusters" in result.warnings[0].lower()
+
+
 def test_live_repo_diff_analyzer_sets_related_clusters_by_semantic_tags(
     tmp_path: Path,
     repo_settings: Settings,
@@ -921,3 +1003,67 @@ def test_repo_tracer_extracts_github_code_search_candidates(
 
     assert trace_output.selected_base_repo.strategy == "github_code_search"
     assert trace_output.selected_base_repo.repo_url == "https://github.com/example/upstream-kernel"
+
+
+def test_repo_tracer_extracts_temporal_topic_candidates(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    target_repo = tmp_path / "target-topic-search"
+    init_git_repo(
+        target_repo,
+        {
+            "src/model.py": "def train_sparse_router():\n    return 'ok'\n",
+        },
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            return httpx.Response(200, json={"items": []})
+        if request.url.path == "/search/repositories":
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "html_url": "https://github.com/example/upstream-routing",
+                            "created_at": "2020-12-10T00:00:00Z",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(404)
+
+    tracer = StrategyDrivenRepoTracer(
+        repo_metadata_provider=EmptyRepoMetadataProvider(),
+        repo_mirror=StaticRepoMirror({"https://github.com/example/target-topic-search": target_repo}),
+        settings=repo_settings.model_copy(update={"github_api_base_url": "https://example.test"}),
+        github_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    trace_output = tracer.trace(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2106.09685",
+            repo_url="https://github.com/example/target-topic-search",
+        ),
+        PaperDocument(
+            source_kind=PaperSourceKind.ARXIV,
+            source_ref="https://arxiv.org/abs/2106.09685",
+            title="Sparse Routing Distillation",
+            abstract="We introduce a sparse routing encoder for long-context retrieval.",
+            sections=[],
+            text="No explicit upstream mention.",
+        ),
+        [
+            PaperContribution(
+                id="C1",
+                title="Sparse routing encoder",
+                section="Method",
+                keywords=["routing", "encoder"],
+                impl_hints=["Introduce routing slots"],
+            )
+        ],
+    )
+
+    assert trace_output.selected_base_repo.strategy == "temporal_topic_search"
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/example/upstream-routing"
+    assert "predates the paper" in trace_output.selected_base_repo.evidence
