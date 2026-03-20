@@ -519,18 +519,37 @@ select {
   gap: 10px;
 }
 
+.code-anchor-browser {
+  display: grid;
+  gap: 12px;
+}
+
+.code-anchor-button,
 .code-anchor {
   display: grid;
   gap: 8px;
+  width: 100%;
+  text-align: left;
   padding: 10px 12px;
   border-radius: 14px;
   border: 1px solid rgba(24, 33, 47, 0.1);
   background: rgba(24, 33, 47, 0.04);
 }
 
+.code-anchor-button {
+  cursor: pointer;
+}
+
+.code-anchor-button.active {
+  border-color: rgba(15, 118, 110, 0.32);
+  background: rgba(15, 118, 110, 0.08);
+}
+
 .code-anchor p,
 .code-anchor strong,
-.code-anchor pre {
+.code-anchor pre,
+.code-anchor-button p,
+.code-anchor-button strong {
   margin: 0;
 }
 
@@ -542,6 +561,20 @@ select {
   color: #f7f3e8;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.monaco-shell {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(24, 33, 47, 0.1);
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.monaco-shell.empty {
+  min-height: 140px;
+  align-items: center;
 }
 
 .checklist-item {

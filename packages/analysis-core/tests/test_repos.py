@@ -176,6 +176,7 @@ def test_live_repo_diff_analyzer_groups_new_and_modified_files(
     assert result.diff_clusters[0].code_anchors
     assert result.diff_clusters[0].code_anchors[0].start_line >= 1
     assert result.diff_clusters[0].code_anchors[0].snippet
+    assert any(anchor.original_snippet for cluster in result.diff_clusters for anchor in cluster.code_anchors)
     assert any(cluster.change_type == DiffChangeType.MODIFIED_LOSS for cluster in result.diff_clusters)
     assert any(cluster.label == "Low-rank adaptation modules" for cluster in result.diff_clusters)
 
@@ -237,6 +238,7 @@ def test_live_repo_diff_analyzer_filters_docs_and_lockfiles(
     assert len(result.diff_clusters) == 1
     assert result.diff_clusters[0].files == ["src/core.py"]
     assert result.diff_clusters[0].code_anchors[0].file_path == "src/core.py"
+    assert result.diff_clusters[0].code_anchors[0].original_snippet is not None
 
 
 def test_live_repo_diff_analyzer_sets_related_clusters_by_semantic_tags(
@@ -353,6 +355,9 @@ def test_live_repo_diff_analyzer_uses_graph_component_clustering(
     assert "Linked by" in result.diff_clusters[0].summary
     assert len(result.diff_clusters[0].code_anchors) >= 2
     assert any("attention_kernel" in anchor.snippet for anchor in result.diff_clusters[0].code_anchors)
+    assert all(
+        anchor.anchor_kind in {"addition", "context", "modification"} for anchor in result.diff_clusters[0].code_anchors
+    )
 
 
 def test_repo_tracer_uses_live_code_fingerprint_candidates(

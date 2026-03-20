@@ -18,6 +18,7 @@ export type JobStage = components["schemas"]["JobStage"];
 export type JobStatusResponse = components["schemas"]["JobStatusResponse"];
 export type BaseRepoCandidate = components["schemas"]["BaseRepoCandidate"];
 export type PaperContribution = components["schemas"]["PaperContribution"];
+export type DiffCodeAnchor = components["schemas"]["DiffCodeAnchor"];
 export type DiffCluster = components["schemas"]["DiffCluster"];
 export type ContributionMapping = components["schemas"]["ContributionMapping"];
 export type AnalysisResult = components["schemas"]["AnalysisResult"];

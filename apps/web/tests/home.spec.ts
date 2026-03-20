@@ -68,6 +68,7 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await expect(page.getByText("Contribution mappings")).toBeVisible();
   await expect(page.getByText("D1 → C1").first()).toBeVisible();
   await expect(page.getByText("Learning entry point")).toBeVisible();
+  await expect(page.getByTestId("monaco-evidence-viewer")).toBeVisible();
   await expect(page.getByRole("button", { name: "Open job" }).first()).toBeVisible();
 });
 

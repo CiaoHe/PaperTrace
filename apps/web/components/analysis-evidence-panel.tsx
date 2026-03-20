@@ -1,6 +1,9 @@
 "use client";
 
-import type { ContributionMapping, DiffCluster, PaperContribution } from "@papertrace/contracts";
+import type { ContributionMapping, DiffCluster, DiffCodeAnchor, PaperContribution } from "@papertrace/contracts";
+import { useEffect, useState } from "react";
+
+import { AnalysisMonacoDiffViewer } from "@/components/analysis-monaco-diff-viewer";
 
 interface AnalysisEvidencePanelProps {
   contribution: PaperContribution | null;
@@ -30,6 +33,10 @@ function sortCodeAnchors(diffCluster: DiffCluster | null, mapping: ContributionM
   });
 }
 
+function anchorKey(anchor: DiffCodeAnchor): string {
+  return `${anchor.file_path}:${anchor.start_line}:${anchor.end_line}:${anchor.anchor_kind}`;
+}
+
 function buildReviewChecklist(
   contribution: PaperContribution | null,
   diffCluster: DiffCluster | null,
@@ -54,6 +61,15 @@ export function AnalysisEvidencePanel({ contribution, diffCluster, mapping }: An
   const reviewChecklist = buildReviewChecklist(contribution, diffCluster, mapping);
   const referenceBadges = contribution?.evidence_refs ?? [];
   const semanticTags = diffCluster?.semantic_tags ?? [];
+  const [selectedAnchorKey, setSelectedAnchorKey] = useState<string | null>(null);
+  const firstAnchorKey = codeAnchors[0] ? anchorKey(codeAnchors[0]) : null;
+
+  useEffect(() => {
+    setSelectedAnchorKey(firstAnchorKey);
+  }, [firstAnchorKey]);
+
+  const selectedAnchor =
+    codeAnchors.find((anchor) => anchorKey(anchor) === selectedAnchorKey) ?? codeAnchors[0] ?? null;
 
   return (
     <div className="workbench-card">
@@ -108,20 +124,27 @@ export function AnalysisEvidencePanel({ contribution, diffCluster, mapping }: An
                   ))}
                 </div>
               ) : null}
-              <div className="code-anchor-list">
-                {codeAnchors.length > 0 ? (
-                  codeAnchors.map((anchor, index) => (
-                    <div className="code-anchor" key={`${anchor.file_path}:${anchor.start_line}:${anchor.end_line}`}>
-                      <strong>
-                        {index + 1}. {anchor.file_path}:{anchor.start_line}-{anchor.end_line}
-                      </strong>
-                      <p>{anchor.reason}</p>
-                      <pre>{anchor.snippet}</pre>
-                    </div>
-                  ))
-                ) : (
-                  <p className="muted">No code anchors available for the selected cluster yet.</p>
-                )}
+              <div className="code-anchor-browser">
+                <div className="code-anchor-list">
+                  {codeAnchors.length > 0 ? (
+                    codeAnchors.map((anchor, index) => (
+                      <button
+                        className={`code-anchor-button${selectedAnchorKey === anchorKey(anchor) ? " active" : ""}`}
+                        key={anchorKey(anchor)}
+                        onClick={() => setSelectedAnchorKey(anchorKey(anchor))}
+                        type="button"
+                      >
+                        <strong>
+                          {index + 1}. {anchor.file_path}:{anchor.start_line}-{anchor.end_line}
+                        </strong>
+                        <p>{anchor.reason}</p>
+                      </button>
+                    ))
+                  ) : (
+                    <p className="muted">No code anchors available for the selected cluster yet.</p>
+                  )}
+                </div>
+                <AnalysisMonacoDiffViewer anchor={selectedAnchor} />
               </div>
             </>
           ) : (

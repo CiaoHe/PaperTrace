@@ -463,20 +463,30 @@ def build_file_code_anchors(
     for opcode, i1, i2, j1, j2 in matcher.get_opcodes():
         if opcode == "equal":
             continue
-        snippet_lines = target_lines[j1:j2] if j1 != j2 else base_lines[i1:i2]
-        if not snippet_lines:
+        snippet_lines = target_lines[j1:j2]
+        original_lines = base_lines[i1:i2]
+        selected_lines = snippet_lines if snippet_lines else original_lines
+        if not selected_lines:
             continue
-        snippet = "\n".join(snippet_lines[:8]).strip()
+        snippet = "\n".join(selected_lines[:8]).strip()
+        original_snippet = "\n".join(original_lines[:8]).strip() or None
         if not snippet:
             continue
         start_line = j1 + 1 if j1 != j2 else i1 + 1
-        end_line = start_line + max(len(snippet_lines) - 1, 0)
+        end_line = start_line + max(len(selected_lines) - 1, 0)
+        original_start_line = i1 + 1 if original_lines else None
+        original_end_line = (
+            original_start_line + max(len(original_lines) - 1, 0) if original_start_line is not None else None
+        )
         anchors.append(
             DiffCodeAnchor(
                 file_path=relative_path,
                 start_line=start_line,
                 end_line=end_line,
+                original_start_line=original_start_line,
+                original_end_line=original_end_line,
                 snippet=snippet,
+                original_snippet=original_snippet,
                 reason=infer_anchor_reason(snippet, semantic_tags, contributions, rationale),
                 anchor_kind=anchor_kind_from_opcode(opcode),
             )
@@ -493,7 +503,10 @@ def build_file_code_anchors(
             file_path=relative_path,
             start_line=1,
             end_line=len(fallback_lines),
+            original_start_line=1 if base_lines else None,
+            original_end_line=min(len(base_lines), len(fallback_lines)) if base_lines else None,
             snippet="\n".join(fallback_lines),
+            original_snippet="\n".join(base_lines[: min(len(base_lines), 8)]).strip() or None,
             reason=rationale,
             anchor_kind="context",
         )

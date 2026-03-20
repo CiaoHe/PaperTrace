@@ -97,7 +97,10 @@ class DiffCodeAnchor(BaseModel):
     file_path: str
     start_line: int
     end_line: int
+    original_start_line: int | None = None
+    original_end_line: int | None = None
     snippet: str
+    original_snippet: str | None = None
     reason: str
     anchor_kind: str
 

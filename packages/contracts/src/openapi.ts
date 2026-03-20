@@ -210,8 +210,14 @@ export interface components {
             start_line: number;
             /** End Line */
             end_line: number;
+            /** Original Start Line */
+            original_start_line?: number | null;
+            /** Original End Line */
+            original_end_line?: number | null;
             /** Snippet */
             snippet: string;
+            /** Original Snippet */
+            original_snippet?: string | null;
             /** Reason */
             reason: string;
             /** Anchor Kind */
