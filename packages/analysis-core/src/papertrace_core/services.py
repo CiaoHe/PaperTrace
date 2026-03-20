@@ -1385,6 +1385,8 @@ def build_temporal_topic_candidates(
 ) -> tuple[list[BaseRepoCandidate], list[str]]:
     if settings is None:
         return [], []
+    if settings.github_token is None and settings.github_api_base_url == "https://api.github.com":
+        return [], []
 
     queries = build_temporal_topic_queries(paper_document, contributions)
     if not queries:
@@ -1469,6 +1471,8 @@ def build_citation_graph_candidates(
 ) -> tuple[list[BaseRepoCandidate], list[str]]:
     if settings is None:
         return [], []
+    if settings.github_token is None and settings.github_api_base_url == "https://api.github.com":
+        return [], []
 
     queries = build_citation_graph_queries(paper_document, request)
     if not queries:
@@ -1535,6 +1539,8 @@ def build_author_graph_candidates(
     client: httpx.Client | None = None,
 ) -> tuple[list[BaseRepoCandidate], list[str]]:
     if settings is None:
+        return [], []
+    if settings.github_token is None and settings.github_api_base_url == "https://api.github.com":
         return [], []
 
     queries = build_author_graph_queries(paper_document, contributions)

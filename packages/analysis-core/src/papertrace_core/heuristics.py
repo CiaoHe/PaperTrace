@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -176,6 +177,30 @@ DIFFERENCE_MARKERS = ("instead of", "rather than", "without", "compared to", "un
 PROBLEM_MARKERS = ("for ", "to ", "so that ", "while ", "which ")
 IMPL_DETAIL_MARKERS = ("implementation", "training", "hyperparameter", "batch size", "optimizer", "warmup", "kernel")
 STEP_SPLIT_RE = re.compile(r"[.;:]\s+|\s+(?:and|then|while)\s+", re.IGNORECASE)
+PAPER_FORMULA_MARKERS: dict[str, tuple[str, ...]] = {
+    "attention": ("attention", "qkv", "kv-cache"),
+    "cache": ("cache", "cached"),
+    "cross_entropy": ("cross entropy", "nll", "negative log-likelihood"),
+    "fused_kernel": ("kernel", "fused", "cuda", "triton"),
+    "kl": ("kl", "kullback", "divergence", "kl-div"),
+    "low_rank": ("low-rank", "rank decomposition", "rank-deficient"),
+    "preference": ("preference", "chosen", "rejected", "pairwise"),
+    "sigmoid": ("sigmoid", "log-sigmoid", "log sigmoid"),
+    "softmax": ("softmax", "log-softmax", "log softmax"),
+    "temperature": ("temperature", "beta"),
+}
+CODE_FORMULA_MARKERS: dict[str, tuple[str, ...]] = {
+    "attention": ("attention", "attn", "qkv"),
+    "cache": ("cache", "cached"),
+    "cross_entropy": ("cross_entropy", "crossentropy", "nll_loss", "nll"),
+    "fused_kernel": ("kernel", "triton", "cuda", "fused"),
+    "kl": ("kl_div", "kldiv", "kl", "divergence"),
+    "low_rank": ("lora", "low_rank", "rank", "adapter"),
+    "preference": ("preference", "chosen", "rejected", "pairwise"),
+    "sigmoid": ("sigmoid", "logsigmoid"),
+    "softmax": ("softmax", "log_softmax"),
+    "temperature": ("temperature", "beta"),
+}
 
 
 @dataclass(frozen=True)
@@ -808,6 +833,26 @@ def anchor_review_tokens(anchor: DiffCodeAnchor) -> set[str]:
     )
 
 
+def safe_code_tokens(snippet: str) -> set[str]:
+    try:
+        tree = ast.parse(snippet)
+    except SyntaxError:
+        return set()
+
+    tokens: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                tokens.add(node.func.id.lower())
+            elif isinstance(node.func, ast.Attribute):
+                tokens.add(node.func.attr.lower())
+        elif isinstance(node, ast.Attribute):
+            tokens.add(node.attr.lower())
+        elif isinstance(node, ast.Name):
+            tokens.add(node.id.lower())
+    return tokens
+
+
 def extract_algorithmic_markers(contribution: PaperContribution) -> set[str]:
     markers: set[str] = set()
     source_values = [
@@ -837,6 +882,35 @@ def extract_algorithmic_markers(contribution: PaperContribution) -> set[str]:
     }
     markers.update(interesting_tokens)
     return markers
+
+
+def extract_formula_concepts(contribution: PaperContribution) -> set[str]:
+    haystack = " ".join(
+        [
+            contribution.title,
+            contribution.problem_solved or "",
+            contribution.baseline_difference or "",
+            *contribution.impl_hints,
+            *contribution.evidence_refs,
+        ]
+    ).lower()
+    return {
+        concept for concept, markers in PAPER_FORMULA_MARKERS.items() if any(marker in haystack for marker in markers)
+    }
+
+
+def extract_anchor_formula_concepts(anchors: list[DiffCodeAnchor]) -> set[str]:
+    anchor_tokens: set[str] = set()
+    for anchor in anchors:
+        anchor_tokens |= anchor_review_tokens(anchor)
+        anchor_tokens |= safe_code_tokens(anchor.snippet)
+        if anchor.original_snippet:
+            anchor_tokens |= safe_code_tokens(anchor.original_snippet)
+    return {
+        concept
+        for concept, markers in CODE_FORMULA_MARKERS.items()
+        if any(marker in anchor_tokens for marker in markers)
+    }
 
 
 def trace_contribution_anchors(
@@ -881,7 +955,19 @@ def trace_contribution_anchors(
         set().union(*(anchor_review_tokens(anchor) for anchor in matched_anchors)) if matched_anchors else set()
     )
     snippet_fidelity = min(len(contribution_tokens & matched_token_union) / contribution_token_budget, 1.0)
-    formula_fidelity = min(len(algorithmic_markers & matched_token_union) / algorithmic_budget, 1.0)
+    token_formula_fidelity = min(len(algorithmic_markers & matched_token_union) / algorithmic_budget, 1.0)
+    paper_formula_concepts = extract_formula_concepts(contribution)
+    code_formula_concepts = extract_anchor_formula_concepts(matched_anchors)
+    symbolic_formula_fidelity = (
+        len(paper_formula_concepts & code_formula_concepts) / max(len(paper_formula_concepts), 1)
+        if paper_formula_concepts
+        else 0.0
+    )
+    formula_fidelity = max(token_formula_fidelity, symbolic_formula_fidelity)
+    if paper_formula_concepts and code_formula_concepts:
+        fidelity_notes.append(
+            "symbolic formula overlap: " + ", ".join(sorted(paper_formula_concepts & code_formula_concepts)[:4])
+        )
 
     if algorithmic_markers and formula_fidelity < 0.4:
         fidelity_notes.append("algorithmic markers from the paper are only weakly reflected in matched code anchors")

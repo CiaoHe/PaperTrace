@@ -29,6 +29,7 @@ from papertrace_core.services import (
     build_default_analysis_service,
     sort_repo_candidates,
 )
+from papertrace_core.settings import get_settings
 
 
 class EmptyLLMClient:
@@ -101,17 +102,28 @@ def test_run_analysis_emits_progress_events_in_stage_order() -> None:
     assert progress_events[-1][1] == 1.0
 
 
-def test_default_analysis_service_recomposes_fixture_result() -> None:
+def test_default_analysis_service_recomposes_fixture_result(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ENABLE_LIVE_BY_DEFAULT", "false")
+    monkeypatch.setenv("ENABLE_LIVE_PAPER_FETCH", "false")
+    monkeypatch.setenv("ENABLE_LIVE_REPO_TRACE", "false")
+    monkeypatch.setenv("ENABLE_LIVE_REPO_ANALYSIS", "false")
+    monkeypatch.setenv("GITHUB_API_BASE_URL", "https://api.github.com")
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    get_settings.cache_clear()
     request = AnalysisRequest(
         paper_source="https://arxiv.org/abs/2205.14135 Flash Attention",
         repo_url="https://github.com/Dao-AILab/flash-attention",
     )
 
-    result = build_default_analysis_service().analyze(request)
+    try:
+        result = build_default_analysis_service().analyze(request)
+    finally:
+        get_settings.cache_clear()
 
     assert result.case_slug == "flash-attention"
     assert result.contributions[0].id == "C1"
     assert result.base_repo_candidates[0].strategy == "paper_mention"
+    assert result.metadata.selected_repo_strategy
     assert result.metadata.paper_source_kind == PaperSourceKind.ARXIV
     assert result.metadata.paper_fetch_mode == ProcessorMode.FIXTURE
     assert result.metadata.parser_mode == ProcessorMode.HEURISTIC
@@ -596,3 +608,44 @@ def test_infer_mappings_traces_steps_and_review_order() -> None:
     assert mappings[0].formula_fidelity > 0.2
     assert mappings[0].matched_anchor_patch_ids == ["anchor-1", "anchor-2"]
     assert any("anchor-backed evidence:" in note for note in mappings[0].fidelity_notes)
+
+
+def test_infer_mappings_uses_symbolic_formula_overlap_for_fidelity() -> None:
+    contribution = PaperContribution(
+        id="C1",
+        title="Direct preference optimization objective",
+        section="Method",
+        keywords=["preference", "objective"],
+        impl_hints=["Optimize a temperature-scaled log-sigmoid objective over chosen and rejected responses."],
+        evidence_refs=["Algorithm 1", "beta-scaled log-sigmoid preference loss"],
+    )
+    diff_cluster = DiffCluster(
+        id="D1",
+        label="Preference loss implementation",
+        change_type=DiffChangeType.MODIFIED_LOSS,
+        files=["trl/trainer/dpo_trainer.py"],
+        summary="Implements a beta-scaled preference loss with torch.logsigmoid over chosen and rejected logits.",
+        code_anchors=[
+            DiffCodeAnchor(
+                patch_id="anchor-formula-1",
+                file_path="trl/trainer/dpo_trainer.py",
+                start_line=44,
+                end_line=52,
+                snippet=(
+                    "def dpo_loss(beta, chosen_logps, rejected_logps):\n"
+                    "    margin = beta * (chosen_logps - rejected_logps)\n"
+                    "    return -F.logsigmoid(margin).mean()\n"
+                ),
+                original_snippet=None,
+                reason="matched beta-scaled preference loss over chosen and rejected responses",
+                anchor_kind="addition",
+            )
+        ],
+        semantic_tags=["loss", "preference"],
+    )
+
+    mappings = infer_mappings([contribution], [diff_cluster])
+
+    assert len(mappings) == 1
+    assert mappings[0].formula_fidelity >= 0.5
+    assert any("symbolic formula overlap:" in note for note in mappings[0].fidelity_notes)

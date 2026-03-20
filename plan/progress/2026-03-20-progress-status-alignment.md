@@ -14,7 +14,7 @@
 
 - Verified locally during this review:
   - `make lint` passed
-  - `make test` passed with `79 passed, 6 deselected`
+  - `make test` passed with `80 passed, 6 deselected`
   - `make e2e` passed with `3 passed`
 - Previously verified in the current implementation cycle:
   - `make lint` passed
@@ -156,6 +156,7 @@
   - Mapping now performs explicit contribution-step tracing against diff-cluster summaries and semantic tags, and records manual review gaps when steps remain untraced.
   - Mapping now scores snippet-grounded fidelity from matched diff anchors rather than relying only on cluster summaries and file paths.
   - Mapping now tracks `snippet_fidelity`, `formula_fidelity`, `fidelity_notes`, and `matched_anchor_patch_ids` to ground review flows in concrete changed snippets.
+  - Formula fidelity now blends token overlap with symbolic concept overlap derived from code-anchor call/attribute markers, so common loss/objective operators are not scored only through raw string reuse.
   - The web review panel now surfaces these fidelity signals and prioritizes matched anchors during code inspection.
 - Evidence:
   - [heuristics.py](/Users/kakusou/work/code/project/PaperTrace/packages/analysis-core/src/papertrace_core/heuristics.py)
@@ -163,7 +164,7 @@
   - [models.py](/Users/kakusou/work/code/project/PaperTrace/packages/analysis-core/src/papertrace_core/models.py)
   - [analysis-evidence-panel.tsx](/Users/kakusou/work/code/project/PaperTrace/apps/web/components/analysis-evidence-panel.tsx)
 - Remaining:
-  - Formula fidelity is still heuristic and token-overlap driven rather than derived from a true symbolic or AST-level implementation check.
+  - Formula fidelity is still heuristic and concept-matching driven rather than derived from a true mathematical or semantic equivalence check.
   - The mapper still does not verify mathematical equivalence between paper equations and code.
 
 ### Web Result Presentation
@@ -334,7 +335,7 @@
 - Notes:
   - Output is now inspectable and preserves unmatched entities.
   - Explicit completeness semantics now exist in the model and output.
-  - It still falls short of the formula-to-code explanation quality described in `AGENTS.md`.
+  - It now includes lightweight symbolic formula cues, but still falls short of the formula-to-code explanation quality described in `AGENTS.md`.
 
 ### 6. Realistic Validation Layer
 
