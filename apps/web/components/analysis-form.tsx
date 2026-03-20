@@ -29,6 +29,18 @@ function readOptionalStringArray(
   return Array.isArray(nextValue) ? nextValue : [];
 }
 
+function buildCoverageBuckets(result: AnalysisResult | null): Record<string, number> {
+  const buckets: Record<string, number> = { FULL: 0, PARTIAL: 0, APPROXIMATED: 0, MISSING: 0 };
+  if (!result) {
+    return buckets;
+  }
+  for (const mapping of result.mappings) {
+    const coverageType = mapping.coverage_type ?? "PARTIAL";
+    buckets[coverageType] = (buckets[coverageType] ?? 0) + 1;
+  }
+  return buckets;
+}
+
 export function AnalysisForm() {
   const paperSourceId = useId();
   const paperFileId = useId();
@@ -47,6 +59,9 @@ export function AnalysisForm() {
   const [submitting, setSubmitting] = useState(false);
   const unmatchedContributionIds = result ? readOptionalStringArray(result, "unmatched_contribution_ids") : [];
   const unmatchedDiffClusterIds = result ? readOptionalStringArray(result, "unmatched_diff_cluster_ids") : [];
+  const coverageBuckets = buildCoverageBuckets(result);
+  const contributionById = new Map(result?.contributions.map((contribution) => [contribution.id, contribution]) ?? []);
+  const clusterById = new Map(result?.diff_clusters.map((cluster) => [cluster.id, cluster]) ?? []);
 
   useEffect(() => {
     void (async () => {
@@ -356,6 +371,53 @@ export function AnalysisForm() {
                 <span className="muted">
                   {result.selected_base_repo.strategy} • confidence {result.selected_base_repo.confidence.toFixed(2)}
                 </span>
+              </div>
+
+              <div>
+                <h3>Evidence review board</h3>
+                <div className="evidence-grid">
+                  {Object.entries(coverageBuckets).map(([label, count]) => (
+                    <div className="evidence-stat" key={label}>
+                      <small>{label}</small>
+                      <strong>{count}</strong>
+                    </div>
+                  ))}
+                </div>
+                <div className="review-lane">
+                  {result.mappings.map((mapping) => {
+                    const contribution = contributionById.get(mapping.contribution_id);
+                    const cluster = clusterById.get(mapping.diff_cluster_id);
+                    const readingOrder = mapping.reading_order ?? [];
+                    return (
+                      <article className="trace-card" key={`${mapping.diff_cluster_id}-${mapping.contribution_id}`}>
+                        <div className="trace-head">
+                          <div>
+                            <small>{mapping.coverage_type}</small>
+                            <h4>
+                              {contribution?.title ?? mapping.contribution_id} ↔{" "}
+                              {cluster?.label ?? mapping.diff_cluster_id}
+                            </h4>
+                          </div>
+                          <strong>{mapping.implementation_coverage.toFixed(2)}</strong>
+                        </div>
+                        <div className="coverage-meter" aria-hidden="true">
+                          <span style={{ width: `${Math.round(mapping.implementation_coverage * 100)}%` }} />
+                        </div>
+                        <p>{mapping.evidence}</p>
+                        {mapping.learning_entry_point ? <p>entry point: {mapping.learning_entry_point}</p> : null}
+                        {readingOrder.length > 0 ? (
+                          <div className="pill-row">
+                            {readingOrder.map((file) => (
+                              <code className="pill" key={file}>
+                                {file}
+                              </code>
+                            ))}
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  })}
+                </div>
               </div>
 
               <div>

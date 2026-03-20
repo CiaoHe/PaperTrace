@@ -64,6 +64,7 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await expect(page.getByText("Runtime provenance")).toBeVisible();
   await expect(page.getByText("Paper fetch mode")).toBeVisible();
   await expect(page.getByText("strategy chain")).toBeVisible();
+  await expect(page.getByText("Evidence review board")).toBeVisible();
   await expect(page.getByText("Contribution mappings")).toBeVisible();
   await expect(page.getByText("D1 → C1")).toBeVisible();
   await expect(page.getByText(/coverage 1\.00/i).first()).toBeVisible();
@@ -87,7 +88,9 @@ test("uploads a PDF and renders pdf-file provenance", async ({ page }) => {
   await page.getByRole("button", { name: "Analyze" }).click();
 
   await expect(page.getByText("Selected base repo")).toBeVisible({ timeout: 15000 });
-  await expect(page.getByRole("heading", { name: /Low-rank adaptation modules/i })).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole("heading", { name: "C1 · Low-rank adaptation modules" })).toBeVisible({
+    timeout: 15000,
+  });
   await expect(
     page
       .locator(".item")

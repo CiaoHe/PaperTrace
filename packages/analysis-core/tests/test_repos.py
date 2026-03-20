@@ -4,6 +4,7 @@ import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
+import httpx
 import pytest
 from papertrace_core.interfaces import FetchOutput, RepoMetadataOutput
 from papertrace_core.models import (
@@ -689,3 +690,63 @@ def test_repo_tracer_extracts_shape_similarity_candidates(
 
     assert trace_output.selected_base_repo.strategy == "shape_similarity"
     assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
+
+
+def test_repo_tracer_extracts_github_code_search_candidates(
+    tmp_path: Path,
+    repo_settings: Settings,
+) -> None:
+    target_repo = tmp_path / "target-code-search"
+    init_git_repo(
+        target_repo,
+        {
+            "src/kernel.py": (
+                "def fused_attention_router_kernel(block_size, num_warps):\n    return block_size + num_warps\n"
+            ),
+        },
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/search/code":
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "repository": {"html_url": "https://github.com/example/upstream-kernel"},
+                            "path": "src/kernel.py",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(404)
+
+    tracer = StrategyDrivenRepoTracer(
+        repo_metadata_provider=EmptyRepoMetadataProvider(),
+        repo_mirror=StaticRepoMirror({"https://github.com/example/target-code-search": target_repo}),
+        settings=repo_settings.model_copy(
+            update={
+                "github_api_base_url": "https://example.test",
+                "github_token": "token",
+            }
+        ),
+        github_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    trace_output = tracer.trace(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/9999.00007",
+            repo_url="https://github.com/example/target-code-search",
+        ),
+        PaperDocument(
+            source_kind=PaperSourceKind.ARXIV,
+            source_ref="https://arxiv.org/abs/9999.00007",
+            title="Code Search Test",
+            abstract="",
+            sections=[],
+            text="No explicit upstream mention.",
+        ),
+        [],
+    )
+
+    assert trace_output.selected_base_repo.strategy == "github_code_search"
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/example/upstream-kernel"

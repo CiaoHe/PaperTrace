@@ -38,7 +38,8 @@ a {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -117,7 +118,8 @@ textarea {
   font-weight: 700;
 }
 
-.field input {
+.field input,
+.field select {
   width: 100%;
   padding: 12px 14px;
   border: 1px solid var(--line);
@@ -235,8 +237,84 @@ textarea {
   border: 1px solid #f1dc8b;
 }
 
+.evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.evidence-stat {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(15, 118, 110, 0.08);
+  border: 1px solid rgba(15, 118, 110, 0.12);
+}
+
+.review-lane {
+  display: grid;
+  gap: 12px;
+}
+
+.trace-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(233, 243, 246, 0.86));
+  border: 1px solid rgba(24, 33, 47, 0.08);
+}
+
+.trace-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: start;
+}
+
+.trace-head h4,
+.trace-head small,
+.trace-card p {
+  margin: 0;
+}
+
+.coverage-meter {
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(24, 33, 47, 0.08);
+  overflow: hidden;
+}
+
+.coverage-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0f766e, #2ea597);
+}
+
+.pill-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pill {
+  display: inline-flex;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(24, 33, 47, 0.06);
+  border: 1px solid rgba(24, 33, 47, 0.08);
+}
+
 @media (max-width: 900px) {
   .grid-main {
     grid-template-columns: 1fr;
+  }
+
+  .evidence-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

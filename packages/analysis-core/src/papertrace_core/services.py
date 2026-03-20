@@ -6,6 +6,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
+
 from papertrace_core.cases import detect_case_slug
 from papertrace_core.fixtures import (
     load_golden_case,
@@ -66,6 +68,7 @@ STRATEGY_PRIORITY: dict[str, int] = {
     "fossil_evidence": 4,
     "paper_mention": 3,
     "dependency_archaeology": 3,
+    "github_code_search": 3,
     "shape_similarity": 3,
     "code_reference": 2,
     "code_fingerprint": 2,
@@ -103,6 +106,17 @@ SEMANTIC_TAG_PATTERNS: dict[str, tuple[str, ...]] = {
     "kernel": ("kernel", "triton", "cuda", "fused"),
     "data": ("dataset", "dataloader", "tokenizer", "preprocess"),
     "inference": ("decode", "generate", "inference", "sampling"),
+}
+GENERIC_SYMBOL_NAMES = {
+    "train",
+    "forward",
+    "main",
+    "setup",
+    "run",
+    "build",
+    "load",
+    "save",
+    "evaluate",
 }
 
 
@@ -405,6 +419,24 @@ def extract_local_import_targets(content: str) -> set[str]:
         parts = [part for part in imported_name.split(".") if part]
         targets.update(part.lower() for part in parts[-2:])
     return targets
+
+
+def extract_signature_queries(snapshot: dict[str, str]) -> list[tuple[str, str]]:
+    queries: list[tuple[str, str]] = []
+    for relative_path, content in snapshot.items():
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("def "):
+                name = stripped.removeprefix("def ").split("(", 1)[0].strip()
+            elif stripped.startswith("class "):
+                name = stripped.removeprefix("class ").split("(", 1)[0].split(":", 1)[0].strip()
+            else:
+                continue
+            lowered_name = name.lower()
+            if len(lowered_name) < 8 or lowered_name in GENERIC_SYMBOL_NAMES:
+                continue
+            queries.append((f'"{name}" language:Python', f"{relative_path}:{name}"))
+    return list(dict.fromkeys(queries))[:4]
 
 
 @dataclass(frozen=True)
@@ -949,6 +981,78 @@ def build_shape_similarity_candidates(
     return dedupe_repo_candidates(candidates), warnings
 
 
+def build_github_code_search_candidates(
+    request: AnalysisRequest,
+    repo_mirror: RepoMirror | None,
+    settings: Settings | None,
+    client: httpx.Client | None = None,
+) -> tuple[list[BaseRepoCandidate], list[str]]:
+    if repo_mirror is None or settings is None:
+        return [], []
+    if settings.github_token is None and settings.github_api_base_url == "https://api.github.com":
+        return [], []
+
+    try:
+        target_root = repo_mirror.prepare(request.repo_url)
+        target_snapshot = load_repo_snapshot(target_root, settings)
+    except (RepoAccessError, KeyError) as exc:
+        return [], [f"Repo tracer skipped GitHub code search: {exc}"]
+
+    signature_queries = extract_signature_queries(target_snapshot)
+    if not signature_queries:
+        return [], []
+
+    close_client = client is None
+    http_client = client or httpx.Client(timeout=settings.github_timeout_seconds)
+    headers = {"Accept": "application/vnd.github+json"}
+    if settings.github_token:
+        headers["Authorization"] = f"Bearer {settings.github_token}"
+
+    repo_evidence: dict[str, list[str]] = {}
+    warnings: list[str] = []
+    try:
+        endpoint = f"{settings.github_api_base_url.rstrip('/')}/search/code"
+        for query, query_label in signature_queries:
+            try:
+                response = http_client.get(
+                    endpoint,
+                    headers=headers,
+                    params={"q": query, "per_page": 5},
+                )
+                response.raise_for_status()
+                payload = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                warnings.append(f"Repo tracer skipped code search query {query_label}: {exc}")
+                continue
+
+            for item in payload.get("items", []):
+                repository = item.get("repository") or {}
+                html_url = repository.get("html_url")
+                if not isinstance(html_url, str):
+                    continue
+                try:
+                    repo_url = normalize_repo_url(html_url)
+                except ValueError:
+                    continue
+                if repo_url == request.repo_url:
+                    continue
+                repo_evidence.setdefault(repo_url, []).append(query_label)
+    finally:
+        if close_client:
+            http_client.close()
+
+    candidates = [
+        BaseRepoCandidate(
+            repo_url=repo_url,
+            strategy="github_code_search",
+            confidence=round(min(0.68 + 0.06 * len(matches), 0.9), 2),
+            evidence=(f"GitHub code search matched target signatures {', '.join(list(dict.fromkeys(matches))[:3])}."),
+        )
+        for repo_url, matches in repo_evidence.items()
+    ]
+    return dedupe_repo_candidates(candidates), warnings
+
+
 def build_code_fingerprint_candidates(
     request: AnalysisRequest,
     repo_mirror: RepoMirror | None,
@@ -996,6 +1100,7 @@ class StrategyDrivenRepoTracer:
     repo_metadata_provider: RepoMetadataProvider
     repo_mirror: RepoMirror | None = None
     settings: Settings | None = None
+    github_client: httpx.Client | None = None
 
     def trace(
         self,
@@ -1042,6 +1147,14 @@ class StrategyDrivenRepoTracer:
         )
         warnings.extend(dependency_warnings)
         candidates.extend(dependency_candidates)
+        github_code_search_candidates, github_code_search_warnings = build_github_code_search_candidates(
+            request,
+            self.repo_mirror,
+            self.settings,
+            client=self.github_client,
+        )
+        warnings.extend(github_code_search_warnings)
+        candidates.extend(github_code_search_candidates)
         code_reference_candidates, code_reference_warnings = build_code_reference_candidates(
             request,
             self.repo_mirror,
@@ -1056,6 +1169,7 @@ class StrategyDrivenRepoTracer:
                 *[candidate.repo_url for candidate in fossil_candidates],
                 *[candidate.repo_url for candidate in framework_signature_candidates],
                 *[candidate.repo_url for candidate in dependency_candidates],
+                *[candidate.repo_url for candidate in github_code_search_candidates],
                 *[candidate.repo_url for candidate in code_reference_candidates],
                 *extract_github_repo_urls(metadata_output.readme_text),
                 *extract_github_repo_urls(metadata_output.notes),
