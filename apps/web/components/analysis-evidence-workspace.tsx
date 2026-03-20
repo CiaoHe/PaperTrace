@@ -25,6 +25,17 @@ interface AnalysisEvidenceWorkspaceProps {
 
 export function AnalysisEvidenceWorkspace({ jobId, result, submittedRepoUrl }: AnalysisEvidenceWorkspaceProps) {
   const [focus, setFocus] = useState<WorkbenchFocus>(() => defaultFocus(result));
+  const prioritizedMappings = [...result.mappings].sort((left, right) => {
+    const leftAnchors = findCluster(result, left.diff_cluster_id)?.code_anchors?.length ?? 0;
+    const rightAnchors = findCluster(result, right.diff_cluster_id)?.code_anchors?.length ?? 0;
+    if (leftAnchors !== rightAnchors) {
+      return rightAnchors - leftAnchors;
+    }
+    if (left.implementation_coverage !== right.implementation_coverage) {
+      return right.implementation_coverage - left.implementation_coverage;
+    }
+    return right.confidence - left.confidence;
+  });
 
   useEffect(() => {
     setFocus(defaultFocus(result));
@@ -98,11 +109,12 @@ export function AnalysisEvidenceWorkspace({ jobId, result, submittedRepoUrl }: A
           </div>
         </div>
         <div className="mapping-lane" data-testid="mapping-lane">
-          {result.mappings.length > 0 ? (
-            result.mappings.map((mapping) => {
+          {prioritizedMappings.length > 0 ? (
+            prioritizedMappings.map((mapping) => {
               const isActive = mappingKey(mapping) === focus.mappingKey;
               const contribution = findContribution(result, mapping.contribution_id);
               const cluster = findCluster(result, mapping.diff_cluster_id);
+              const anchorCount = cluster?.code_anchors?.length ?? 0;
               return (
                 <button
                   className={`trace-card trace-button${isActive ? " active" : ""}`}
@@ -123,12 +135,15 @@ export function AnalysisEvidenceWorkspace({ jobId, result, submittedRepoUrl }: A
                         {cluster?.id ?? mapping.diff_cluster_id} → {contribution?.id ?? mapping.contribution_id}
                       </h4>
                     </div>
-                    <strong>{mapping.implementation_coverage.toFixed(2)}</strong>
+                    <strong>{anchorCount} anchors</strong>
                   </div>
                   <div className="coverage-meter" aria-hidden="true">
                     <span style={{ width: `${Math.round(mapping.implementation_coverage * 100)}%` }} />
                   </div>
-                  <p>{contribution?.title ?? mapping.contribution_id}</p>
+                  <p>
+                    {contribution?.title ?? mapping.contribution_id} · coverage{" "}
+                    {mapping.implementation_coverage.toFixed(2)}
+                  </p>
                 </button>
               );
             })

@@ -640,6 +640,16 @@ select {
   gap: 12px;
 }
 
+.review-subsection {
+  display: grid;
+  gap: 10px;
+}
+
+.review-subsection h4 {
+  margin: 0;
+  font-size: 1rem;
+}
+
 .review-file-tree {
   display: grid;
   gap: 8px;
@@ -669,6 +679,42 @@ select {
 .paper-review-stack {
   display: grid;
   gap: 12px;
+}
+
+.review-stream {
+  display: grid;
+  gap: 10px;
+}
+
+.review-snippet-card {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(24, 33, 47, 0.1);
+  background: rgba(24, 33, 47, 0.03);
+  cursor: pointer;
+}
+
+.review-snippet-card.active {
+  border-color: rgba(15, 118, 110, 0.32);
+  background: rgba(15, 118, 110, 0.08);
+}
+
+.review-snippet-preview {
+  margin: 0;
+  overflow: hidden;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(24, 33, 47, 0.08);
+  background: #f7f9fb;
+  color: var(--ink);
+  font-family: "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
 }
 
 .review-editor-shell {

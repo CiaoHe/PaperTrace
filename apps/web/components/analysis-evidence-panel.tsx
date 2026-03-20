@@ -18,6 +18,13 @@ interface ReviewFileEntry {
   anchors: DiffCodeAnchor[];
 }
 
+interface SnippetStreamProps {
+  anchors: DiffCodeAnchor[];
+  mode: "source" | "current";
+  selectedAnchorKey: string | null;
+  onSelect: (value: string) => void;
+}
+
 function buildPaperClaims(contribution: PaperContribution | null): string[] {
   if (!contribution) {
     return [];
@@ -80,10 +87,14 @@ function buildReviewFiles(diffCluster: DiffCluster | null, codeAnchors: DiffCode
     grouped.set(anchor.file_path, existing);
   }
 
-  return diffCluster.files.map((path) => ({
+  const files = diffCluster.files.map((path) => ({
     path,
     anchors: grouped.get(path) ?? [],
   }));
+  const hasAnchoredFile = files.some((file) => file.anchors.length > 0);
+  return files
+    .filter((file) => (hasAnchoredFile ? file.anchors.length > 0 : true))
+    .sort((left, right) => right.anchors.length - left.anchors.length || left.path.localeCompare(right.path));
 }
 
 function formatRange(startLine: number | null | undefined, endLine: number | null | undefined): string {
@@ -91,6 +102,55 @@ function formatRange(startLine: number | null | undefined, endLine: number | nul
     return "range unavailable";
   }
   return `${startLine}-${endLine}`;
+}
+
+function previewSnippet(value: string | null | undefined): string {
+  if (!value) {
+    return "Snippet unavailable.";
+  }
+  return value
+    .trim()
+    .split("\n")
+    .slice(0, 6)
+    .join("\n");
+}
+
+function SnippetStream({ anchors, mode, selectedAnchorKey, onSelect }: SnippetStreamProps) {
+  if (anchors.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="review-stream">
+      {anchors.map((anchor) => {
+        const key = anchorKey(anchor);
+        const active = key === selectedAnchorKey;
+        const range =
+          mode === "source"
+            ? formatRange(anchor.original_start_line, anchor.original_end_line)
+            : formatRange(anchor.start_line, anchor.end_line);
+        const snippet = mode === "source" ? anchor.original_snippet : anchor.snippet;
+
+        return (
+          <button
+            className={`review-snippet-card${active ? " active" : ""}`}
+            key={`${mode}:${key}`}
+            onClick={() => onSelect(key)}
+            type="button"
+          >
+            <div className="trace-head">
+              <div>
+                <small>{mode === "source" ? "upstream snippet" : "current snippet"}</small>
+                <h4>{anchor.file_path}</h4>
+              </div>
+              <strong>{range}</strong>
+            </div>
+            <pre className="review-snippet-preview">{previewSnippet(snippet)}</pre>
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 export function AnalysisEvidencePanel({
@@ -120,6 +180,14 @@ export function AnalysisEvidencePanel({
   const selectedAnchorMatched = Boolean(
     selectedAnchor?.patch_id && mapping?.matched_anchor_patch_ids?.includes(selectedAnchor.patch_id),
   );
+  const siblingAnchors =
+    selectedAnchor && selectedFilePath
+      ? codeAnchors.filter((anchor) => anchor.file_path === selectedFilePath && anchorKey(anchor) !== anchorKey(selectedAnchor))
+      : [];
+  const alternateAnchors =
+    selectedAnchor && selectedFilePath
+      ? codeAnchors.filter((anchor) => anchor.file_path !== selectedFilePath)
+      : codeAnchors;
 
   return (
     <div className="workbench-card evidence-review-stage">
@@ -176,19 +244,6 @@ export function AnalysisEvidencePanel({
             </p>
           </div>
           <div className="review-pane-body">
-            <div className="review-file-tree">
-              {reviewFiles.map((file) => (
-                <button
-                  className={`review-file-chip${selectedFilePath === file.path ? " active" : ""}`}
-                  key={file.path}
-                  onClick={() => setSelectedAnchorKey(file.anchors[0] ? anchorKey(file.anchors[0]) : null)}
-                  type="button"
-                >
-                  <strong>{file.path}</strong>
-                  <span>{file.anchors.length} anchor(s)</span>
-                </button>
-              ))}
-            </div>
             <AnalysisMonacoCodeViewer
               emptyMessage="No upstream source snippet is available for this anchor."
               filePath={selectedAnchor?.file_path ?? selectedFilePath}
@@ -200,6 +255,43 @@ export function AnalysisEvidencePanel({
               }
               value={selectedAnchor?.original_snippet ?? ""}
             />
+            {siblingAnchors.length > 0 ? (
+              <div className="review-subsection">
+                <h4>More upstream snippets in this file</h4>
+                <SnippetStream
+                  anchors={siblingAnchors}
+                  mode="source"
+                  onSelect={setSelectedAnchorKey}
+                  selectedAnchorKey={selectedAnchorKey}
+                />
+              </div>
+            ) : null}
+            {alternateAnchors.length > 0 ? (
+              <div className="review-subsection">
+                <h4>Other linked files</h4>
+                <SnippetStream
+                  anchors={alternateAnchors.slice(0, 6)}
+                  mode="source"
+                  onSelect={setSelectedAnchorKey}
+                  selectedAnchorKey={selectedAnchorKey}
+                />
+              </div>
+            ) : null}
+            {reviewFiles.length > 0 ? (
+              <div className="review-file-tree">
+                {reviewFiles.map((file) => (
+                  <button
+                    className={`review-file-chip${selectedFilePath === file.path ? " active" : ""}`}
+                    key={`source:${file.path}`}
+                    onClick={() => setSelectedAnchorKey(file.anchors[0] ? anchorKey(file.anchors[0]) : null)}
+                    type="button"
+                  >
+                    <strong>{file.path}</strong>
+                    <span>{file.anchors.length} anchor(s)</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
         </section>
 
@@ -214,19 +306,6 @@ export function AnalysisEvidencePanel({
             </p>
           </div>
           <div className="review-pane-body">
-            <div className="review-file-tree">
-              {reviewFiles.map((file) => (
-                <button
-                  className={`review-file-chip${selectedFilePath === file.path ? " active" : ""}`}
-                  key={file.path}
-                  onClick={() => setSelectedAnchorKey(file.anchors[0] ? anchorKey(file.anchors[0]) : null)}
-                  type="button"
-                >
-                  <strong>{file.path}</strong>
-                  <span>{file.anchors.length} anchor(s)</span>
-                </button>
-              ))}
-            </div>
             <AnalysisMonacoCodeViewer
               emptyMessage="No current-repo snippet is available for this anchor."
               filePath={selectedAnchor?.file_path ?? selectedFilePath}
@@ -236,6 +315,43 @@ export function AnalysisEvidencePanel({
               }
               value={selectedAnchor?.snippet ?? ""}
             />
+            {siblingAnchors.length > 0 ? (
+              <div className="review-subsection">
+                <h4>More current-repo snippets in this file</h4>
+                <SnippetStream
+                  anchors={siblingAnchors}
+                  mode="current"
+                  onSelect={setSelectedAnchorKey}
+                  selectedAnchorKey={selectedAnchorKey}
+                />
+              </div>
+            ) : null}
+            {alternateAnchors.length > 0 ? (
+              <div className="review-subsection">
+                <h4>Other linked files</h4>
+                <SnippetStream
+                  anchors={alternateAnchors.slice(0, 6)}
+                  mode="current"
+                  onSelect={setSelectedAnchorKey}
+                  selectedAnchorKey={selectedAnchorKey}
+                />
+              </div>
+            ) : null}
+            {reviewFiles.length > 0 ? (
+              <div className="review-file-tree">
+                {reviewFiles.map((file) => (
+                  <button
+                    className={`review-file-chip${selectedFilePath === file.path ? " active" : ""}`}
+                    key={`current:${file.path}`}
+                    onClick={() => setSelectedAnchorKey(file.anchors[0] ? anchorKey(file.anchors[0]) : null)}
+                    type="button"
+                  >
+                    <strong>{file.path}</strong>
+                    <span>{file.anchors.length} anchor(s)</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
         </section>
 

@@ -14,6 +14,35 @@ export function mappingKey(mapping: ContributionMapping): string {
   return `${mapping.diff_cluster_id}:${mapping.contribution_id}`;
 }
 
+function countAnchors(cluster: DiffCluster | null): number {
+  return cluster?.code_anchors?.length ?? 0;
+}
+
+function compareMappingPriority(result: AnalysisResult, left: ContributionMapping, right: ContributionMapping): number {
+  const leftCluster = findCluster(result, left.diff_cluster_id);
+  const rightCluster = findCluster(result, right.diff_cluster_id);
+  const leftAnchors = countAnchors(leftCluster);
+  const rightAnchors = countAnchors(rightCluster);
+  if (leftAnchors !== rightAnchors) {
+    return rightAnchors - leftAnchors;
+  }
+  if (left.implementation_coverage !== right.implementation_coverage) {
+    return right.implementation_coverage - left.implementation_coverage;
+  }
+  return right.confidence - left.confidence;
+}
+
+function selectPreferredMapping(
+  result: AnalysisResult,
+  predicate: (mapping: ContributionMapping) => boolean,
+): ContributionMapping | null {
+  const matches = result.mappings.filter(predicate);
+  if (matches.length === 0) {
+    return null;
+  }
+  return [...matches].sort((left, right) => compareMappingPriority(result, left, right))[0] ?? null;
+}
+
 export function buildCoverageBuckets(result: AnalysisResult): Record<string, number> {
   const buckets: Record<string, number> = { FULL: 0, PARTIAL: 0, APPROXIMATED: 0, MISSING: 0 };
   for (const mapping of result.mappings) {
@@ -35,9 +64,10 @@ export function readOptionalStringArray(
 }
 
 export function defaultFocus(result: AnalysisResult): WorkbenchFocus {
-  const firstMapping = result.mappings[0] ?? null;
+  const firstMapping = selectPreferredMapping(result, () => true);
   const firstContribution = result.contributions[0] ?? null;
-  const firstCluster = result.diff_clusters[0] ?? null;
+  const firstCluster =
+    (firstMapping ? findCluster(result, firstMapping.diff_cluster_id) : null) ?? result.diff_clusters[0] ?? null;
   return {
     mappingKey: firstMapping ? mappingKey(firstMapping) : null,
     contributionId: firstMapping?.contribution_id ?? firstContribution?.id ?? null,
@@ -67,7 +97,7 @@ export function findMapping(result: AnalysisResult, selectedMappingKey: string |
 }
 
 export function focusContribution(result: AnalysisResult, contributionId: string): WorkbenchFocus {
-  const relatedMapping = result.mappings.find((mapping) => mapping.contribution_id === contributionId) ?? null;
+  const relatedMapping = selectPreferredMapping(result, (mapping) => mapping.contribution_id === contributionId);
   return {
     mappingKey: relatedMapping ? mappingKey(relatedMapping) : null,
     contributionId,
@@ -76,7 +106,7 @@ export function focusContribution(result: AnalysisResult, contributionId: string
 }
 
 export function focusCluster(result: AnalysisResult, clusterId: string): WorkbenchFocus {
-  const relatedMapping = result.mappings.find((mapping) => mapping.diff_cluster_id === clusterId) ?? null;
+  const relatedMapping = selectPreferredMapping(result, (mapping) => mapping.diff_cluster_id === clusterId);
   return {
     mappingKey: relatedMapping ? mappingKey(relatedMapping) : null,
     contributionId: relatedMapping?.contribution_id ?? null,
