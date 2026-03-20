@@ -195,10 +195,27 @@ export interface components {
             files: string[];
             /** Summary */
             summary: string;
+            /** Code Anchors */
+            code_anchors?: components["schemas"]["DiffCodeAnchor"][];
             /** Semantic Tags */
             semantic_tags?: string[];
             /** Related Cluster Ids */
             related_cluster_ids?: string[];
+        };
+        /** DiffCodeAnchor */
+        DiffCodeAnchor: {
+            /** File Path */
+            file_path: string;
+            /** Start Line */
+            start_line: number;
+            /** End Line */
+            end_line: number;
+            /** Snippet */
+            snippet: string;
+            /** Reason */
+            reason: string;
+            /** Anchor Kind */
+            anchor_kind: string;
         };
         /** ExamplesResponse */
         ExamplesResponse: {

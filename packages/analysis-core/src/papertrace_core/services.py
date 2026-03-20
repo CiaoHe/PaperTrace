@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 import re
 import subprocess
 import tomllib
@@ -42,6 +43,7 @@ from papertrace_core.models import (
     BaseRepoCandidate,
     DiffChangeType,
     DiffCluster,
+    DiffCodeAnchor,
     PaperContribution,
     PaperDocument,
     ProcessorMode,
@@ -135,6 +137,7 @@ class FrameworkSignature:
 @dataclass(frozen=True)
 class ChangedFile:
     relative_path: str
+    base_content: str | None
     content: str
     change_type: DiffChangeType
     label: str
@@ -197,6 +200,14 @@ DEPENDENCY_REPO_MAP: dict[str, str] = {
 
 def dedupe_preserving_order(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
+
+
+def dedupe_code_anchors(anchors: list[DiffCodeAnchor]) -> list[DiffCodeAnchor]:
+    by_key: dict[tuple[str, int, int, str], DiffCodeAnchor] = {}
+    for anchor in anchors:
+        key = (anchor.file_path, anchor.start_line, anchor.end_line, anchor.anchor_kind)
+        by_key.setdefault(key, anchor)
+    return list(by_key.values())
 
 
 def build_repo_file_haystack(relative_path: str, content: str) -> str:
@@ -405,6 +416,88 @@ def summarize_cluster(
     if len(files) == 1:
         return f"{label} inferred from {files[0]}; bucketed as {change_type.lower()} because {rationale}."
     return f"{label} inferred from {len(files)} files; bucketed as {change_type.lower()} because {rationale}."
+
+
+def infer_anchor_reason(
+    snippet: str,
+    semantic_tags: list[str],
+    contributions: list[PaperContribution],
+    rationale: str,
+) -> str:
+    lowered_snippet = snippet.lower()
+    matched_tags = [tag for tag in semantic_tags if tag in lowered_snippet]
+    matched_contributions = [
+        contribution.title
+        for contribution in contributions
+        if any(keyword.lower() in lowered_snippet for keyword in contribution.keywords[:3])
+    ]
+    evidence_parts: list[str] = []
+    if matched_tags:
+        evidence_parts.append(f"matched semantic tags {', '.join(matched_tags[:3])}")
+    if matched_contributions:
+        evidence_parts.append(f"aligned with {', '.join(matched_contributions[:2])}")
+    evidence_parts.append(rationale)
+    return "; ".join(evidence_parts)
+
+
+def anchor_kind_from_opcode(opcode: str) -> str:
+    if opcode == "insert":
+        return "addition"
+    if opcode == "delete":
+        return "deletion"
+    return "modification"
+
+
+def build_file_code_anchors(
+    relative_path: str,
+    base_content: str | None,
+    target_content: str,
+    semantic_tags: list[str],
+    contributions: list[PaperContribution],
+    rationale: str,
+) -> list[DiffCodeAnchor]:
+    base_lines = (base_content or "").splitlines()
+    target_lines = target_content.splitlines()
+    matcher = difflib.SequenceMatcher(a=base_lines, b=target_lines)
+    anchors: list[DiffCodeAnchor] = []
+    for opcode, i1, i2, j1, j2 in matcher.get_opcodes():
+        if opcode == "equal":
+            continue
+        snippet_lines = target_lines[j1:j2] if j1 != j2 else base_lines[i1:i2]
+        if not snippet_lines:
+            continue
+        snippet = "\n".join(snippet_lines[:8]).strip()
+        if not snippet:
+            continue
+        start_line = j1 + 1 if j1 != j2 else i1 + 1
+        end_line = start_line + max(len(snippet_lines) - 1, 0)
+        anchors.append(
+            DiffCodeAnchor(
+                file_path=relative_path,
+                start_line=start_line,
+                end_line=end_line,
+                snippet=snippet,
+                reason=infer_anchor_reason(snippet, semantic_tags, contributions, rationale),
+                anchor_kind=anchor_kind_from_opcode(opcode),
+            )
+        )
+        if len(anchors) >= 3:
+            break
+    if anchors:
+        return anchors
+    fallback_lines = target_lines[: min(len(target_lines), 8)]
+    if not fallback_lines:
+        return []
+    return [
+        DiffCodeAnchor(
+            file_path=relative_path,
+            start_line=1,
+            end_line=len(fallback_lines),
+            snippet="\n".join(fallback_lines),
+            reason=rationale,
+            anchor_kind="context",
+        )
+    ]
 
 
 def extract_semantic_tags(
@@ -1412,6 +1505,7 @@ class LiveRepoDiffAnalyzer:
             changed_files.append(
                 ChangedFile(
                     relative_path=relative_path,
+                    base_content=base_content,
                     content=content,
                     change_type=change_type,
                     label=label,
@@ -1468,6 +1562,21 @@ class LiveRepoDiffAnalyzer:
                 summary = f"{summary} Linked by {'; '.join(cluster_state.link_reasons[:2])}."
             if semantic_tags:
                 summary = f"{summary} Semantic tags: {', '.join(semantic_tags[:4])}."
+            component_changed_files = [file for file in changed_files if file.relative_path in set(files)]
+            code_anchors = dedupe_code_anchors(
+                [
+                    anchor
+                    for changed_file in component_changed_files
+                    for anchor in build_file_code_anchors(
+                        changed_file.relative_path,
+                        changed_file.base_content,
+                        changed_file.content,
+                        changed_file.semantic_tags,
+                        contributions,
+                        changed_file.rationale,
+                    )
+                ]
+            )[:6]
             diff_clusters.append(
                 DiffCluster(
                     id=f"D{index}",
@@ -1475,6 +1584,7 @@ class LiveRepoDiffAnalyzer:
                     change_type=cluster_state.change_type,
                     files=files,
                     summary=summary,
+                    code_anchors=code_anchors,
                     semantic_tags=semantic_tags,
                 )
             )

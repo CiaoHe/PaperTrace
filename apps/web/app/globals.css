@@ -520,12 +520,27 @@ select {
 }
 
 .code-anchor {
-  display: block;
+  display: grid;
+  gap: 8px;
   padding: 10px 12px;
   border-radius: 14px;
   border: 1px solid rgba(24, 33, 47, 0.1);
   background: rgba(24, 33, 47, 0.04);
-  white-space: normal;
+}
+
+.code-anchor p,
+.code-anchor strong,
+.code-anchor pre {
+  margin: 0;
+}
+
+.code-anchor pre {
+  overflow-x: auto;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(24, 33, 47, 0.92);
+  color: #f7f3e8;
+  white-space: pre-wrap;
   word-break: break-word;
 }
 

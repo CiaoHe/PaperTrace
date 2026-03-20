@@ -93,12 +93,22 @@ class BaseRepoCandidate(BaseModel):
     evidence: str
 
 
+class DiffCodeAnchor(BaseModel):
+    file_path: str
+    start_line: int
+    end_line: int
+    snippet: str
+    reason: str
+    anchor_kind: str
+
+
 class DiffCluster(BaseModel):
     id: str
     label: str
     change_type: DiffChangeType
     files: list[str]
     summary: str
+    code_anchors: list[DiffCodeAnchor] = Field(default_factory=list)
     semantic_tags: list[str] = Field(default_factory=list)
     related_cluster_ids: list[str] = Field(default_factory=list)
 

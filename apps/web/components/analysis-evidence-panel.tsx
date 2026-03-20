@@ -17,12 +17,17 @@ function buildPaperClaims(contribution: PaperContribution | null): string[] {
   );
 }
 
-function buildCodeAnchors(diffCluster: DiffCluster | null, mapping: ContributionMapping | null): string[] {
+function sortCodeAnchors(diffCluster: DiffCluster | null, mapping: ContributionMapping | null) {
   if (!diffCluster) {
     return [];
   }
-  const orderedFiles = mapping?.reading_order?.length ? mapping.reading_order : diffCluster.files;
-  return orderedFiles.map((file, index) => `${index + 1}. ${file}`);
+  const anchors = diffCluster.code_anchors ?? [];
+  const readingOrder = mapping?.reading_order ?? [];
+  return [...anchors].sort((left, right) => {
+    const leftRank = readingOrder.indexOf(left.file_path);
+    const rightRank = readingOrder.indexOf(right.file_path);
+    return (leftRank === -1 ? 999 : leftRank) - (rightRank === -1 ? 999 : rightRank);
+  });
 }
 
 function buildReviewChecklist(
@@ -45,7 +50,7 @@ function buildReviewChecklist(
 
 export function AnalysisEvidencePanel({ contribution, diffCluster, mapping }: AnalysisEvidencePanelProps) {
   const paperClaims = buildPaperClaims(contribution);
-  const codeAnchors = buildCodeAnchors(diffCluster, mapping);
+  const codeAnchors = sortCodeAnchors(diffCluster, mapping);
   const reviewChecklist = buildReviewChecklist(contribution, diffCluster, mapping);
   const referenceBadges = contribution?.evidence_refs ?? [];
   const semanticTags = diffCluster?.semantic_tags ?? [];
@@ -104,11 +109,19 @@ export function AnalysisEvidencePanel({ contribution, diffCluster, mapping }: An
                 </div>
               ) : null}
               <div className="code-anchor-list">
-                {codeAnchors.map((anchor) => (
-                  <code className="code-anchor" key={anchor}>
-                    {anchor}
-                  </code>
-                ))}
+                {codeAnchors.length > 0 ? (
+                  codeAnchors.map((anchor, index) => (
+                    <div className="code-anchor" key={`${anchor.file_path}:${anchor.start_line}:${anchor.end_line}`}>
+                      <strong>
+                        {index + 1}. {anchor.file_path}:{anchor.start_line}-{anchor.end_line}
+                      </strong>
+                      <p>{anchor.reason}</p>
+                      <pre>{anchor.snippet}</pre>
+                    </div>
+                  ))
+                ) : (
+                  <p className="muted">No code anchors available for the selected cluster yet.</p>
+                )}
               </div>
             </>
           ) : (
