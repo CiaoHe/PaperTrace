@@ -47,10 +47,12 @@ function buildPdfBuffer(title: string, body: string): Buffer {
 test("renders the local MVP shell", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("PaperTrace local MVP")).toBeVisible();
-  await expect(page.getByText("API runtime config")).toBeVisible();
   await expect(page.getByLabel("Paper source type")).toBeVisible();
   await expect(page.getByLabel("PDF upload")).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /Force reanalysis/i })).toBeVisible();
   await expect(page.getByRole("button", { name: "Analyze" })).toBeVisible();
+  await expect(page.getByText("API runtime config")).toHaveCount(0);
+  await expect(page.getByText("What the MVP returns")).toHaveCount(0);
 });
 
 test("submits an analysis and renders mapped results", async ({ page }) => {

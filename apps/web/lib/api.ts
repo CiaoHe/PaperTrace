@@ -4,7 +4,6 @@ import type {
   CreateAnalysisResponse,
   ExamplesResponse,
   GoldenCaseExample,
-  HealthResponse,
   JobStatusResponse,
   JobsResponse,
   ResultResponse,
@@ -17,6 +16,7 @@ export type StructuredPaperSourceKind = "arxiv" | "pdf_url" | "text_reference";
 export interface CreateAnalysisUploadPayload {
   paperFile: File;
   paperSource?: string;
+  forceReanalysis?: boolean;
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -45,6 +45,9 @@ export async function createAnalysis(
                 source_ref: payload.paperSource || payload.paperFile.name,
               }),
             );
+            if (payload.forceReanalysis) {
+              formData.set("force_reanalysis", "true");
+            }
             return formData;
           })(),
         })
@@ -90,11 +93,4 @@ export async function getJobs(): Promise<JobStatusResponse[]> {
   });
   const body = await parseResponse<JobsResponse>(response);
   return body.jobs;
-}
-
-export async function getHealth(): Promise<HealthResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/health`, {
-    cache: "no-store",
-  });
-  return parseResponse<HealthResponse>(response);
 }

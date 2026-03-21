@@ -1,19 +1,11 @@
 "use client";
 
-import type { AnalysisResult, GoldenCaseExample, HealthResponse, JobStatusResponse } from "@papertrace/contracts";
+import type { AnalysisResult, GoldenCaseExample, JobStatusResponse } from "@papertrace/contracts";
 import { useEffect, useId, useState } from "react";
 
 import { AnalysisResultsWorkbench } from "@/components/analysis-results-workbench";
 import type { StructuredPaperSourceKind } from "@/lib/api";
-import {
-  API_BASE_URL,
-  createAnalysis,
-  getAnalysis,
-  getAnalysisResult,
-  getExamples,
-  getHealth,
-  getJobs,
-} from "@/lib/api";
+import { createAnalysis, getAnalysis, getAnalysisResult, getExamples, getJobs } from "@/lib/api";
 
 const DEFAULT_PAPER = "https://arxiv.org/abs/2106.09685 LoRA";
 const DEFAULT_PAPER_SOURCE_KIND: StructuredPaperSourceKind = "arxiv";
@@ -29,10 +21,6 @@ const JOB_STAGE_ORDER = [
 
 function statusClass(status: JobStatusResponse["status"]): string {
   return status === "failed" ? "status failed" : "status";
-}
-
-function formatEnumLabel(value: string): string {
-  return value.replaceAll("_", " ");
 }
 
 function jobProgressPercent(job: JobStatusResponse): number {
@@ -70,7 +58,7 @@ export function AnalysisForm() {
   const [paperSource, setPaperSource] = useState(DEFAULT_PAPER);
   const [paperFile, setPaperFile] = useState<File | null>(null);
   const [paperSourceKind, setPaperSourceKind] = useState<StructuredPaperSourceKind>(DEFAULT_PAPER_SOURCE_KIND);
-  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [forceReanalysis, setForceReanalysis] = useState(false);
   const [examples, setExamples] = useState<GoldenCaseExample[]>([]);
   const [jobs, setJobs] = useState<JobStatusResponse[]>([]);
   const [job, setJob] = useState<JobStatusResponse | null>(null);
@@ -81,12 +69,10 @@ export function AnalysisForm() {
   useEffect(() => {
     void (async () => {
       try {
-        const [nextHealth, nextExamples, nextJobs] = await Promise.all([getHealth(), getExamples(), getJobs()]);
-        setHealth(nextHealth);
+        const [nextExamples, nextJobs] = await Promise.all([getExamples(), getJobs()]);
         setExamples(nextExamples);
         setJobs(nextJobs.slice(0, 5));
       } catch {
-        setHealth(null);
         setExamples([]);
         setJobs([]);
       }
@@ -137,8 +123,10 @@ export function AnalysisForm() {
         ? await createAnalysis({
             paperFile,
             paperSource: paperSource || undefined,
+            forceReanalysis,
           })
         : await createAnalysis({
+            force_reanalysis: forceReanalysis,
             paper_input: {
               source_kind: paperSourceKind,
               source_ref: paperSource,
@@ -198,8 +186,8 @@ export function AnalysisForm() {
         <div className="panel-inner">
           <h2>Run a local analysis</h2>
           <p className="muted">
-            Submit an arXiv or PDF reference. The backend resolves the implementation repository from the paper, then
-            runs live public fetch and shallow-clone analysis with fixture fallbacks when a stage cannot complete.
+            Submit one paper link or one PDF. PaperTrace resolves the implementation repository, traces the upstream
+            base, and maps code changes back to the paper claims.
           </p>
           <form onSubmit={onSubmit}>
             {examples.length > 0 ? (
@@ -252,6 +240,19 @@ export function AnalysisForm() {
                 {paperFile ? `Selected file: ${paperFile.name}` : "Choose a local PDF to submit multipart/form-data."}
               </p>
             </div>
+            <label className="checkbox-field">
+              <input
+                checked={forceReanalysis}
+                onChange={(event) => setForceReanalysis(event.target.checked)}
+                type="checkbox"
+              />
+              <span>
+                Force reanalysis
+                <small className="muted">
+                  Run the pipeline again instead of reusing an existing analysis for this paper.
+                </small>
+              </span>
+            </label>
             <div className="actions">
               <button className="button" disabled={submitting} type="submit">
                 {submitting ? "Submitting..." : "Analyze"}
@@ -280,58 +281,6 @@ export function AnalysisForm() {
       </section>
 
       <section className="stack">
-        <div className="panel">
-          <div className="panel-inner">
-            <h3>What the MVP returns</h3>
-            <div className="list">
-              <div className="item">
-                <h4>Base repo lineage</h4>
-                <p>Ranked upstream candidates with strategy, confidence, and evidence.</p>
-              </div>
-              <div className="item">
-                <h4>Semantic diff clusters</h4>
-                <p>Filtered code changes grouped by technical purpose instead of raw file churn.</p>
-              </div>
-              <div className="item">
-                <h4>Contribution mapping</h4>
-                <p>Each diff cluster aligned to the paper contribution it appears to implement.</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {health ? (
-          <div className="panel">
-            <div className="panel-inner">
-              <h3>API runtime config</h3>
-              <div className="list">
-                <div className="item">
-                  <h4>Execution defaults</h4>
-                  <p>
-                    live by default: {String(health.live_by_default)} · paper fetch: {String(health.live_paper_fetch)} ·
-                    repo trace: {String(health.live_repo_trace)} · repo analysis: {String(health.live_repo_analysis)}
-                  </p>
-                </div>
-                <div className="item">
-                  <h4>Integrations</h4>
-                  <p>
-                    database: {health.database} · queue: {health.queue_mode} · llm configured:{" "}
-                    {String(health.llm_configured)}
-                  </p>
-                </div>
-                <div className="item">
-                  <h4>Observed API endpoint</h4>
-                  <p>{API_BASE_URL}</p>
-                </div>
-                <div className="item">
-                  <h4>Paper source kinds</h4>
-                  <p>{health.supported_paper_source_kinds.map(formatEnumLabel).join(" · ")}</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
         <div className="panel">
           <div className="panel-inner">
             <h3>Recent local jobs</h3>

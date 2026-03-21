@@ -219,6 +219,34 @@ select {
   background: white;
 }
 
+.checkbox-field {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.checkbox-field input {
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+  accent-color: var(--ink);
+}
+
+.checkbox-field span {
+  display: grid;
+  gap: 4px;
+  font-weight: 700;
+}
+
+.checkbox-field small {
+  font-weight: 400;
+}
+
 .actions {
   display: flex;
   gap: 10px;
