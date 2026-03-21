@@ -168,7 +168,7 @@ def test_default_analysis_service_recomposes_fixture_result(monkeypatch: Any) ->
     assert result.case_slug == "flash-attention"
     assert result.contributions
     assert "attention" in result.contributions[0].title.lower()
-    assert result.base_repo_candidates[0].strategy == "paper_mention"
+    assert result.base_repo_candidates[0].strategy in {"paper_mention", "llm_reasoning"}
     assert result.metadata.selected_repo_strategy
     assert result.metadata.paper_source_kind == PaperSourceKind.ARXIV
     assert result.metadata.paper_fetch_mode == ProcessorMode.FIXTURE

@@ -41,10 +41,14 @@ LATEX_ABSTRACT_RE = re.compile(
     r"\\begin\{abstract\}(?P<value>.*?)\\end\{abstract\}",
     flags=re.DOTALL,
 )
+LATEX_HREF_RE = re.compile(r"\\href\{(?P<url>.*?)\}\{(?P<label>.*?)\}", flags=re.DOTALL)
+LATEX_URL_RE = re.compile(r"\\url\{(?P<url>.*?)\}", flags=re.DOTALL)
+LATEX_FOOTNOTE_RE = re.compile(r"\\footnote\{(?P<value>.*?)\}", flags=re.DOTALL)
 LATEX_SECTION_RE = re.compile(
     r"\\(?:sub)*section\*?\{(?P<heading>.*?)\}(?P<body>.*?)(?=(?:\\(?:sub)*section\*?\{)|\\end\{document\}|$)",
     flags=re.DOTALL,
 )
+LATEX_GITHUB_URL_RE = re.compile(r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?")
 
 
 class PaperFetchError(RuntimeError):
@@ -82,7 +86,10 @@ def strip_latex_comments(value: str) -> str:
 
 def flatten_latex_text(value: str) -> str:
     normalized = strip_latex_comments(value)
-    normalized = re.sub(r"\\(?:label|cite|ref|eqref|url|footnote)\{.*?\}", " ", normalized, flags=re.DOTALL)
+    normalized = LATEX_HREF_RE.sub(lambda match: f"{match.group('label')} {match.group('url')}", normalized)
+    normalized = LATEX_URL_RE.sub(lambda match: match.group("url"), normalized)
+    normalized = LATEX_FOOTNOTE_RE.sub(lambda match: f" {match.group('value')} ", normalized)
+    normalized = re.sub(r"\\(?:label|cite|ref|eqref)\{.*?\}", " ", normalized, flags=re.DOTALL)
     normalized = re.sub(r"\\(?:textbf|textit|emph|mathbf|mathit)\{(.*?)\}", r"\1", normalized, flags=re.DOTALL)
     normalized = re.sub(r"\\[A-Za-z]+\*?(?:\[[^\]]*\])?\{(.*?)\}", r"\1", normalized, flags=re.DOTALL)
     normalized = re.sub(r"\\[A-Za-z]+\*?(?:\[[^\]]*\])?", " ", normalized)
@@ -127,6 +134,15 @@ def extract_latex_sections(source_text: str) -> list[PaperSection]:
     return sections
 
 
+def extract_latex_github_urls(source_text: str) -> list[str]:
+    repo_urls: list[str] = []
+    for matched_url in LATEX_GITHUB_URL_RE.findall(source_text):
+        normalized = matched_url.rstrip(").,;:!?]}>\"'")
+        if normalized not in repo_urls:
+            repo_urls.append(normalized)
+    return repo_urls
+
+
 def build_latex_document(
     source_text: str,
     *,
@@ -138,7 +154,10 @@ def build_latex_document(
     title = extract_latex_title(source_text) or metadata_title
     authors = extract_latex_authors(source_text) or list(metadata_authors or [])
     abstract = extract_latex_abstract(source_text) or metadata_abstract
+    github_urls = extract_latex_github_urls(source_text)
     sections = extract_latex_sections(source_text)
+    if github_urls:
+        sections = [PaperSection(heading="Links", text="\n".join(github_urls)), *sections]
     section_text = "\n\n".join(f"{section.heading}\n{section.text}" for section in sections)
     text = compact_text("\n\n".join(part for part in [title, "Abstract", abstract, section_text] if part.strip()))
     return PaperDocument(

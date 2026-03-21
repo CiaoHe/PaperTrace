@@ -15,6 +15,7 @@ from papertrace_core.paper_sources import (
     FixturePaperSourceFetcher,
     PdfPaperSourceFetcher,
     SourceAwarePaperSourceFetcher,
+    flatten_latex_text,
     infer_pdf_sections,
     paper_document_from_fixture,
 )
@@ -198,6 +199,71 @@ def test_arxiv_paper_source_fetcher_prefers_latex_source_archive() -> None:
     assert output.paper_document.abstract.startswith("We introduce source-backed low-rank adaptation")
     assert [section.heading for section in output.paper_document.sections] == ["Introduction", "Method"]
     assert "rank decomposition matrices" in output.paper_document.text.lower()
+
+
+def test_flatten_latex_text_preserves_github_urls_from_url_and_href() -> None:
+    flattened = flatten_latex_text(
+        textwrap.dedent(
+            r"""
+            Official code: \url{https://github.com/lasgroup/SDPO}.
+            Mirror link: \href{https://github.com/verl-project/verl}{verl upstream}.
+            """
+        )
+    )
+
+    assert "https://github.com/lasgroup/SDPO" in flattened
+    assert "https://github.com/verl-project/verl" in flattened
+
+
+def test_arxiv_paper_source_fetcher_preserves_title_page_github_links() -> None:
+    atom_feed = textwrap.dedent(
+        """\
+        <?xml version="1.0" encoding="UTF-8"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <title>Reinforcement Learning via Self-Distillation</title>
+            <summary>SDPO metadata summary.</summary>
+          </entry>
+        </feed>
+        """
+    )
+    raw_tex = textwrap.dedent(
+        r"""
+        \documentclass{article}
+        \title{Reinforcement Learning via Self-Distillation}
+        \begin{document}
+        \maketitle
+        \url{https://github.com/lasgroup/SDPO}
+        \begin{abstract}
+        We introduce SDPO.
+        \end{abstract}
+        \section{Introduction}
+        This implementation is based on verl.
+        \end{document}
+        """
+    ).encode("utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/api/query"):
+            return httpx.Response(200, text=atom_feed)
+        if request.url.path.endswith("/e-print/2601.20802"):
+            return httpx.Response(200, content=raw_tex)
+        raise AssertionError(f"Unexpected request path: {request.url}")
+
+    fetcher = ArxivPaperSourceFetcher(
+        settings=build_settings(),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    output = fetcher.fetch(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2601.20802",
+            repo_url="https://github.com/lasgroup/SDPO",
+        )
+    )
+
+    assert output.mode == ProcessorMode.REMOTE_FETCH
+    assert "https://github.com/lasgroup/SDPO" in output.paper_document.text
+    assert output.paper_document.sections[0].heading == "Links"
 
 
 def test_arxiv_paper_source_fetcher_falls_back_to_metadata_when_source_fetch_fails() -> None:

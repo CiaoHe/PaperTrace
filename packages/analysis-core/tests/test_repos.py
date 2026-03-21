@@ -86,6 +86,19 @@ class LLMRepoSuggestionClient:
         del request_repo_url, paper_document, readme_text, notes, existing_candidates
         return self.candidates
 
+    def select_base_repo(
+        self,
+        *,
+        request_repo_url: str,
+        paper_document: PaperDocument,
+        contributions: list[PaperContribution],
+        readme_text: str,
+        notes: str,
+        existing_candidates: list[BaseRepoCandidate],
+    ) -> BaseRepoCandidate | None:
+        del request_repo_url, paper_document, contributions, readme_text, notes
+        return existing_candidates[0] if existing_candidates else None
+
 
 def init_git_repo(root: Path, files: Mapping[str, str], commit_message: str = "seed") -> None:
     root.mkdir(parents=True, exist_ok=True)
@@ -836,6 +849,84 @@ def test_repo_tracer_can_add_llm_reasoning_candidates() -> None:
     assert any(
         candidate.repo_url == "https://github.com/facebookresearch/fairseq" for candidate in trace_output.candidates
     )
+
+
+def test_repo_tracer_can_promote_llm_selected_base_repo() -> None:
+    request = AnalysisRequest(
+        paper_source="https://arxiv.org/abs/2601.20802",
+        repo_url="https://github.com/lasgroup/SDPO",
+    )
+    paper_document = PaperDocument(
+        source_kind=PaperSourceKind.ARXIV,
+        source_ref=request.paper_source,
+        title="Reinforcement Learning via Self-Distillation",
+        abstract="SDPO adds an RL training algorithm on top of verl-style trainers.",
+        sections=[],
+        text="Official code: https://github.com/lasgroup/SDPO. The implementation is based on verl.",
+    )
+
+    class ReadmeChoiceProvider:
+        def fetch(self, _: AnalysisRequest) -> RepoMetadataOutput:
+            return RepoMetadataOutput(
+                fork_parent=None,
+                readme_text=(
+                    "Our implementation is based on a recent version of https://github.com/verl-project/verl. "
+                    "We use https://github.com/vllm-project/vllm for inference."
+                ),
+                notes="SDPO extends verl training abstractions while using vllm for rollout serving.",
+                warnings=[],
+            )
+
+    class BaseRepoChoiceLLM:
+        def suggest_base_repos(
+            self,
+            *,
+            request_repo_url: str,
+            paper_document: PaperDocument,
+            readme_text: str,
+            notes: str,
+            existing_candidates: list[BaseRepoCandidate],
+        ) -> list[BaseRepoCandidate]:
+            del request_repo_url, paper_document, readme_text, notes, existing_candidates
+            return []
+
+        def select_base_repo(
+            self,
+            *,
+            request_repo_url: str,
+            paper_document: PaperDocument,
+            contributions: list[PaperContribution],
+            readme_text: str,
+            notes: str,
+            existing_candidates: list[BaseRepoCandidate],
+        ) -> BaseRepoCandidate | None:
+            del request_repo_url, paper_document, contributions, readme_text, notes
+            return next(
+                candidate
+                for candidate in existing_candidates
+                if candidate.repo_url == "https://github.com/verl-project/verl"
+            )
+
+    trace_output = StrategyDrivenRepoTracer(
+        repo_metadata_provider=ReadmeChoiceProvider(),
+        llm_client=cast(Any, BaseRepoChoiceLLM()),
+    ).trace(
+        request,
+        paper_document,
+        [
+            PaperContribution(
+                id="C1",
+                title="Self-Distillation Policy Optimization",
+                section="Abstract",
+                keywords=["sdpo", "verl", "policy", "optimization"],
+                impl_hints=["Extend the verl trainer with self-distillation losses."],
+            )
+        ],
+    )
+
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/verl-project/verl"
+    assert trace_output.selected_base_repo.strategy == "llm_reasoning"
+    assert any("llm base-repo selection" in warning for warning in trace_output.warnings)
 
 
 def test_repo_tracer_reranks_candidates_by_lineage_preview(

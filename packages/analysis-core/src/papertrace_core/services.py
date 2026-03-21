@@ -1072,8 +1072,6 @@ def infer_target_repo_from_cases(
             request.paper_source,
             paper_document.source_ref,
             paper_document.title,
-            paper_document.abstract,
-            paper_document.text,
         ]
     ).lower()
     for golden_case in default_case_examples():
@@ -1098,6 +1096,26 @@ def infer_target_repo_from_paper_mentions(
     )
     repo_urls = extract_github_repo_urls(haystack)
     return repo_urls[0] if repo_urls else None
+
+
+def infer_target_repo_from_llm(
+    paper_document: PaperDocument,
+    contributions: list[PaperContribution],
+    llm_client: LLMClient | None,
+) -> tuple[str | None, list[str]]:
+    if llm_client is None or not hasattr(llm_client, "extract_target_repos"):
+        return None, []
+    try:
+        candidates = llm_client.extract_target_repos(paper_document, contributions)
+    except Exception:
+        return None, ["Target repo resolution skipped llm extraction after an llm error."]
+    if not candidates:
+        return None, []
+    selected_candidate = candidates[0]
+    return (
+        selected_candidate.repo_url,
+        [f"LLM target-repo extraction selected {selected_candidate.repo_url}: {selected_candidate.evidence}"],
+    )
 
 
 def infer_target_repo_from_remote_search(
@@ -1147,20 +1165,31 @@ def resolve_target_repo_url(
     paper_document: PaperDocument,
     contributions: list[PaperContribution],
     settings: Settings | None,
+    llm_client: LLMClient | None = None,
 ) -> tuple[str, list[str]]:
     if request.repo_url.strip():
         return normalize_repo_url(request.repo_url), []
 
     warnings: list[str] = []
-    case_repo_url = infer_target_repo_from_cases(request, paper_document)
-    if case_repo_url is not None:
-        warnings.append(f"Resolved target repository from known paper case: {case_repo_url}.")
-        return case_repo_url, warnings
-
     paper_repo_url = infer_target_repo_from_paper_mentions(request, paper_document)
     if paper_repo_url is not None:
         warnings.append(f"Resolved target repository from GitHub URL mentioned in the paper: {paper_repo_url}.")
         return paper_repo_url, warnings
+
+    llm_repo_url, llm_warnings = infer_target_repo_from_llm(
+        paper_document,
+        contributions,
+        llm_client,
+    )
+    warnings.extend(llm_warnings)
+    if llm_repo_url is not None:
+        warnings.append(f"Resolved target repository from llm paper analysis: {llm_repo_url}.")
+        return llm_repo_url, warnings
+
+    case_repo_url = infer_target_repo_from_cases(request, paper_document)
+    if case_repo_url is not None:
+        warnings.append(f"Resolved target repository from known paper case: {case_repo_url}.")
+        return case_repo_url, warnings
 
     remote_repo_url, remote_warnings = infer_target_repo_from_remote_search(
         request,
@@ -1221,11 +1250,18 @@ def readme_declares_base_relationship(readme_haystack: str, aliases: tuple[str, 
     return False
 
 
-def build_paper_mention_candidates(paper_document: PaperDocument) -> list[BaseRepoCandidate]:
+def build_paper_mention_candidates(
+    paper_document: PaperDocument,
+    *,
+    exclude_repo_urls: tuple[str, ...] = (),
+) -> list[BaseRepoCandidate]:
     haystack = paper_document.text.lower()
     candidates: list[BaseRepoCandidate] = []
+    excluded = {repo_url.lower() for repo_url in exclude_repo_urls}
 
     for repo_url in extract_github_repo_urls(paper_document.text):
+        if repo_url.lower() in excluded:
+            continue
         candidates.append(
             BaseRepoCandidate(
                 repo_url=repo_url,
@@ -2262,7 +2298,10 @@ class StrategyDrivenRepoTracer:
                 )
             )
 
-        paper_candidates = build_paper_mention_candidates(paper_document)
+        paper_candidates = build_paper_mention_candidates(
+            paper_document,
+            exclude_repo_urls=(request.repo_url,),
+        )
         candidates.extend(paper_candidates)
         if progress is not None:
             progress(
@@ -2436,6 +2475,45 @@ class StrategyDrivenRepoTracer:
             contributions,
         )
         warnings.extend(preview_warnings)
+        if self.llm_client is not None and hasattr(self.llm_client, "select_base_repo"):
+            candidate_pool = [candidate for candidate in deduped if candidate.repo_url != request.repo_url][:8]
+            if candidate_pool:
+                try:
+                    llm_selected = self.llm_client.select_base_repo(
+                        request_repo_url=request.repo_url,
+                        paper_document=paper_document,
+                        contributions=contributions,
+                        readme_text=metadata_output.readme_text,
+                        notes=metadata_output.notes,
+                        existing_candidates=candidate_pool,
+                    )
+                except Exception:
+                    warnings.append("Repo tracer skipped llm base-repo selection after heuristic ranking.")
+                else:
+                    if llm_selected is not None:
+                        selected_match = next(
+                            (candidate for candidate in deduped if candidate.repo_url == llm_selected.repo_url),
+                            None,
+                        )
+                        if selected_match is not None:
+                            promoted_candidate = selected_match.model_copy(
+                                update={
+                                    "strategy": "llm_reasoning",
+                                    "confidence": max(selected_match.confidence, llm_selected.confidence),
+                                    "evidence": llm_selected.evidence,
+                                }
+                            )
+                            deduped = [
+                                promoted_candidate,
+                                *[
+                                    candidate
+                                    for candidate in deduped
+                                    if candidate.repo_url != promoted_candidate.repo_url
+                                ],
+                            ]
+                            warnings.append(
+                                f"Repo tracer promoted {promoted_candidate.repo_url} via llm base-repo selection."
+                            )
         if golden is not None and golden.selected_base_repo.repo_url == request.repo_url:
             self_candidate = next((candidate for candidate in deduped if candidate.repo_url == request.repo_url), None)
             if self_candidate is not None:
@@ -2911,6 +2989,7 @@ class AnalysisService:
     repo_tracer: RepoTracer
     diff_analyzer: DiffAnalyzer
     contribution_mapper: ContributionMapper
+    llm_client: LLMClient | None = None
 
     def analyze(
         self,
@@ -2943,6 +3022,7 @@ class AnalysisService:
             fetch_output.paper_document,
             parse_output.contributions,
             get_settings(),
+            self.llm_client,
         )
         request.repo_url = resolved_repo_url
         if progress is not None:
@@ -3055,4 +3135,5 @@ def build_default_analysis_service() -> AnalysisService:
         ),
         diff_analyzer=diff_analyzer,
         contribution_mapper=FixtureContributionMapper(llm_client=llm_client),
+        llm_client=llm_client,
     )

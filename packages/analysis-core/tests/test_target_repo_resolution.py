@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from _pytest.monkeypatch import MonkeyPatch
-from papertrace_core.models import AnalysisRequest, PaperDocument, PaperSourceKind
+from papertrace_core.models import AnalysisRequest, BaseRepoCandidate, PaperDocument, PaperSourceKind
 from papertrace_core.services import resolve_target_repo_url
 from papertrace_core.settings import Settings
 
@@ -14,6 +14,18 @@ def build_paper_document(*, source_ref: str, title: str, abstract: str = "", tex
         abstract=abstract,
         text=text or f"{title}\n{abstract}",
     )
+
+
+class TargetRepoLLMClient:
+    def extract_target_repos(self, _: PaperDocument, __: list[object]) -> list[BaseRepoCandidate]:
+        return [
+            BaseRepoCandidate(
+                repo_url="https://github.com/example/paper-code",
+                confidence=0.88,
+                evidence="The paper explicitly presents this repo as the code release.",
+                strategy="llm_reasoning",
+            )
+        ]
 
 
 def test_resolve_target_repo_url_infers_known_case_from_paper_source() -> None:
@@ -46,6 +58,51 @@ def test_resolve_target_repo_url_infers_direct_github_mention() -> None:
     assert repo_url == "https://github.com/example/research-repo"
     assert warnings == [
         "Resolved target repository from GitHub URL mentioned in the paper: https://github.com/example/research-repo."
+    ]
+
+
+def test_resolve_target_repo_url_prefers_direct_github_mention_over_case_aliases() -> None:
+    request = AnalysisRequest(paper_source="https://arxiv.org/abs/2601.20802")
+    paper_document = build_paper_document(
+        source_ref=request.paper_source,
+        title="Reinforcement Learning via Self-Distillation",
+        abstract="We compare against direct preference optimization baselines.",
+        text=(
+            "The official code release is https://github.com/lasgroup/SDPO and the paper also discusses "
+            "direct preference optimization baselines."
+        ),
+    )
+
+    repo_url, warnings = resolve_target_repo_url(request, paper_document, contributions=[], settings=None)
+
+    assert repo_url == "https://github.com/lasgroup/SDPO"
+    assert warnings == [
+        "Resolved target repository from GitHub URL mentioned in the paper: https://github.com/lasgroup/SDPO."
+    ]
+
+
+def test_resolve_target_repo_url_uses_llm_before_known_case_fallback() -> None:
+    request = AnalysisRequest(paper_source="https://arxiv.org/abs/9999.99998")
+    paper_document = build_paper_document(
+        source_ref=request.paper_source,
+        title="Sequence Distillation",
+        abstract="We release implementation details without a plain-text GitHub URL in the parsed text.",
+        text="Sequence distillation paper body without easily regex-extractable URLs.",
+    )
+
+    repo_url, warnings = resolve_target_repo_url(
+        request,
+        paper_document,
+        contributions=[],
+        settings=Settings(),
+        llm_client=TargetRepoLLMClient(),  # type: ignore[arg-type]
+    )
+
+    assert repo_url == "https://github.com/example/paper-code"
+    assert warnings == [
+        "LLM target-repo extraction selected https://github.com/example/paper-code: "
+        "The paper explicitly presents this repo as the code release.",
+        "Resolved target repository from llm paper analysis: https://github.com/example/paper-code.",
     ]
 
 

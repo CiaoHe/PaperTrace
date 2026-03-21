@@ -19,6 +19,7 @@ from papertrace_core.models import (
 from papertrace_core.settings import Settings
 
 JSON_BLOCK_RE = re.compile(r"```json\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+GITHUB_URL_RE = re.compile(r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?")
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_-]{2,}")
 SECTION_SPLIT_RE = re.compile(r"\n\s*\n+")
 SECTION_KIND_PRIORITY: dict[str, int] = {
@@ -279,6 +280,25 @@ def _normalize_base_repo_payload(payload: Any) -> list[BaseRepoCandidate]:
     return candidates
 
 
+def _normalize_single_base_repo_payload(payload: Any) -> BaseRepoCandidate | None:
+    if isinstance(payload, list):
+        payload = payload[0] if payload else None
+    if not isinstance(payload, dict):
+        return None
+    candidates = _normalize_base_repo_payload([payload])
+    return candidates[0] if candidates else None
+
+
+def _extract_visible_github_urls(text: str) -> list[str]:
+    repo_urls: list[str] = []
+    for matched_url in GITHUB_URL_RE.findall(text):
+        try:
+            repo_urls.append(normalize_repo_url(matched_url))
+        except ValueError:
+            continue
+    return list(dict.fromkeys(repo_urls))
+
+
 @dataclass(frozen=True)
 class LLMClient:
     client: OpenAI
@@ -301,7 +321,8 @@ class LLMClient:
         prompt = (
             "Extract the concrete technical contributions from the paper context below as JSON only.\n"
             "Focus on novel methods, objectives, kernels, architectures, or training procedures.\n"
-            "Avoid background claims, evaluation-only statements, and vague motivation.\n"
+            "Avoid background claims, evaluation-only statements, vague motivation, and baseline methods that the "
+            "paper only compares against.\n"
             "Return a JSON array. Each item must contain:\n"
             "- id\n"
             "- title\n"
@@ -332,6 +353,51 @@ class LLMClient:
         content = response.choices[0].message.content or "[]"
         payload = _extract_json_block(content)
         return _normalize_contribution_payload(payload)
+
+    def extract_target_repos(
+        self,
+        paper_document: PaperDocument,
+        contributions: list[PaperContribution],
+    ) -> list[BaseRepoCandidate]:
+        sections = _build_llm_parse_sections(
+            paper_document,
+            max_sections=5,
+            section_char_limit=1800,
+            total_char_limit=7000,
+        )
+        sections_payload = "\n\n".join(f"## Section: {heading}\n{text}" for heading, text in sections)
+        visible_urls = _extract_visible_github_urls(paper_document.text)
+        contribution_titles = [contribution.title for contribution in contributions[:6]]
+        prompt = (
+            "Identify the official implementation repository for this paper.\n"
+            "Return only a JSON array. Each item must contain: repo_url, confidence, evidence.\n"
+            "Important rules:\n"
+            "- Prefer repositories explicitly presented as the paper's code release.\n"
+            "- Do not return upstream frameworks, dependencies, or baseline repos unless the paper clearly presents "
+            "them as the paper's own implementation repository.\n"
+            "- If the paper text does not contain enough evidence, return [].\n\n"
+            f"Paper title: {paper_document.title}\n"
+            f"Paper abstract: {_trim_text(paper_document.abstract or paper_document.text, 2200)}\n"
+            f"Contribution titles: {json.dumps(contribution_titles, ensure_ascii=True)}\n"
+            f"Visible GitHub URLs already extracted from the paper: {json.dumps(visible_urls, ensure_ascii=True)}\n"
+            f"Paper context:\n{sections_payload or _trim_text(paper_document.text, 5000)}\n"
+        )
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You identify official paper implementation repositories. "
+                        "Return JSON only and avoid guessing unrelated upstream frameworks."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        content = response.choices[0].message.content or "[]"
+        payload = _extract_json_block(content)
+        return _normalize_base_repo_payload(payload)
 
     def extract_contributions(self, paper_document: PaperDocument) -> list[PaperContribution]:
         batches = _build_llm_parse_batches(
@@ -399,6 +465,55 @@ class LLMClient:
         content = response.choices[0].message.content or "[]"
         payload = _extract_json_block(content)
         return _normalize_base_repo_payload(payload)
+
+    def select_base_repo(
+        self,
+        *,
+        request_repo_url: str,
+        paper_document: PaperDocument,
+        contributions: list[PaperContribution],
+        readme_text: str,
+        notes: str,
+        existing_candidates: list[BaseRepoCandidate],
+    ) -> BaseRepoCandidate | None:
+        candidate_payload = json.dumps(
+            [candidate.model_dump(mode="json") for candidate in existing_candidates[:8]],
+            ensure_ascii=True,
+        )
+        contribution_titles = json.dumps([contribution.title for contribution in contributions[:6]], ensure_ascii=True)
+        prompt = (
+            "Choose the single best upstream or base repository for reviewing the paper-specific "
+            "implementation changes.\n"
+            "Return only a JSON object with: repo_url, confidence, evidence.\n"
+            "Important rules:\n"
+            "- The current repo is the paper implementation; do not return the current repo itself.\n"
+            "- Prefer the framework or parent codebase that the paper's novel training algorithm or method extends.\n"
+            "- Do not choose a generic dependency or inference backend just because it has more overlapping files.\n"
+            "- Choose only from the candidate list provided below. If none are plausible, return {}.\n\n"
+            f"Current repo: {request_repo_url}\n"
+            f"Paper title: {paper_document.title}\n"
+            f"Paper abstract: {_trim_text(paper_document.abstract or paper_document.text, 2200)}\n"
+            f"Contribution titles: {contribution_titles}\n"
+            f"Current repo README excerpt: {_trim_text(readme_text, 2800)}\n"
+            f"Repo notes: {_trim_text(notes, 1200)}\n"
+            f"Candidate upstream repos: {candidate_payload}\n"
+        )
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You select the most plausible upstream base repository for ML code lineage review. "
+                        "Return JSON only and focus on the paper-specific implementation base."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        content = response.choices[0].message.content or "{}"
+        payload = _extract_json_block(content)
+        return _normalize_single_base_repo_payload(payload)
 
     def map_contributions(
         self,
