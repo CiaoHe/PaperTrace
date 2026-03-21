@@ -58,7 +58,7 @@ class AnalysisRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     paper_source: str = Field(min_length=1)
-    repo_url: str = Field(min_length=1)
+    repo_url: str = ""
 
 
 class PaperSection(BaseModel):

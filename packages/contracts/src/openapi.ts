@@ -478,7 +478,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    repo_url: string;
+                    repo_url?: string;
                     paper_input: {
                         /** @constant */
                         source_kind: "arxiv";
@@ -503,7 +503,7 @@ export interface operations {
                      * @enum {string}
                      */
                     paper_source_kind?: "arxiv" | "pdf_url" | "pdf_file" | "text_reference";
-                    repo_url: string;
+                    repo_url?: string;
                     /** Format: binary */
                     paper_file?: string;
                 };

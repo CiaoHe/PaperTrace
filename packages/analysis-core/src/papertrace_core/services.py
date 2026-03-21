@@ -13,7 +13,7 @@ from typing import cast
 
 import httpx
 
-from papertrace_core.cases import detect_case_slug
+from papertrace_core.cases import default_case_examples, detect_case_slug
 from papertrace_core.fixtures import (
     load_golden_case,
 )
@@ -883,6 +883,122 @@ def rerank_repo_candidates_with_preview(
 
 def unique_repo_urls(repo_urls: list[str]) -> list[str]:
     return list(dict.fromkeys(repo_urls))
+
+
+def infer_target_repo_from_cases(
+    request: AnalysisRequest,
+    paper_document: PaperDocument,
+) -> str | None:
+    haystack = " ".join(
+        [
+            request.paper_source,
+            paper_document.source_ref,
+            paper_document.title,
+            paper_document.abstract,
+            paper_document.text,
+        ]
+    ).lower()
+    for golden_case in default_case_examples():
+        if any(alias in haystack for alias in golden_case.aliases):
+            return normalize_repo_url(golden_case.repo_url)
+    return None
+
+
+def infer_target_repo_from_paper_mentions(
+    request: AnalysisRequest,
+    paper_document: PaperDocument,
+) -> str | None:
+    haystack = "\n".join(
+        [
+            request.paper_source,
+            paper_document.source_ref,
+            paper_document.title,
+            paper_document.abstract,
+            paper_document.text,
+            *[section.text for section in paper_document.sections],
+        ]
+    )
+    repo_urls = extract_github_repo_urls(haystack)
+    return repo_urls[0] if repo_urls else None
+
+
+def infer_target_repo_from_remote_search(
+    request: AnalysisRequest,
+    paper_document: PaperDocument,
+    contributions: list[PaperContribution],
+    settings: Settings | None,
+) -> tuple[str | None, list[str]]:
+    if settings is None:
+        return None, []
+
+    placeholder_request = AnalysisRequest(
+        paper_source=request.paper_source,
+        repo_url="https://github.com/papertrace/unknown-target",
+    )
+    warnings: list[str] = []
+    candidates: list[BaseRepoCandidate] = []
+    citation_candidates, citation_warnings = build_citation_graph_candidates(
+        placeholder_request,
+        paper_document,
+        settings,
+    )
+    warnings.extend(citation_warnings)
+    candidates.extend(citation_candidates)
+    author_candidates, author_warnings = build_author_graph_candidates(
+        placeholder_request,
+        paper_document,
+        contributions,
+        settings,
+    )
+    warnings.extend(author_warnings)
+    candidates.extend(author_candidates)
+    topic_candidates, topic_warnings = build_temporal_topic_candidates(
+        placeholder_request,
+        paper_document,
+        contributions,
+        settings,
+    )
+    warnings.extend(topic_warnings)
+    candidates.extend(topic_candidates)
+    deduped = dedupe_repo_candidates(candidates)
+    return (deduped[0].repo_url if deduped else None), warnings
+
+
+def resolve_target_repo_url(
+    request: AnalysisRequest,
+    paper_document: PaperDocument,
+    contributions: list[PaperContribution],
+    settings: Settings | None,
+) -> tuple[str, list[str]]:
+    if request.repo_url.strip():
+        return normalize_repo_url(request.repo_url), []
+
+    warnings: list[str] = []
+    case_repo_url = infer_target_repo_from_cases(request, paper_document)
+    if case_repo_url is not None:
+        warnings.append(f"Resolved target repository from known paper case: {case_repo_url}.")
+        return case_repo_url, warnings
+
+    paper_repo_url = infer_target_repo_from_paper_mentions(request, paper_document)
+    if paper_repo_url is not None:
+        warnings.append(f"Resolved target repository from GitHub URL mentioned in the paper: {paper_repo_url}.")
+        return paper_repo_url, warnings
+
+    remote_repo_url, remote_warnings = infer_target_repo_from_remote_search(
+        request,
+        paper_document,
+        contributions,
+        settings,
+    )
+    warnings.extend(remote_warnings)
+    if remote_repo_url is not None:
+        warnings.append(f"Resolved target repository from remote paper-to-repo search: {remote_repo_url}.")
+        return remote_repo_url, warnings
+
+    raise ValueError(
+        "Could not infer a GitHub repository from the paper source. "
+        "Provide repo_url explicitly or use a paper with a discoverable implementation repository."
+    )
 
 
 def inferred_paper_timestamp(request: AnalysisRequest) -> datetime | None:
@@ -2568,6 +2684,16 @@ class AnalysisService:
                 1.0,
                 f"Paper parsing completed with {len(parse_output.contributions)} contributions.",
             )
+            progress(JobStage.REPO_FETCH, 0.0, "Resolving target repository from the paper source.")
+        resolved_repo_url, repo_resolution_warnings = resolve_target_repo_url(
+            request,
+            fetch_output.paper_document,
+            parse_output.contributions,
+            get_settings(),
+        )
+        request.repo_url = resolved_repo_url
+        if progress is not None:
+            progress(JobStage.REPO_FETCH, 0.05, f"Resolved target repository {resolved_repo_url}.")
         trace_output = self.repo_tracer.trace(
             request,
             fetch_output.paper_document,
@@ -2590,6 +2716,7 @@ class AnalysisService:
             [
                 *fetch_output.warnings,
                 *parse_output.warnings,
+                *repo_resolution_warnings,
                 *trace_output.warnings,
                 *diff_output.warnings,
                 *mapping_output.warnings,

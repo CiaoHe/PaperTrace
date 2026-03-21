@@ -182,6 +182,7 @@ def update_job_status(
     summary: str | None = None,
     error_message: str | None = None,
     result: AnalysisResult | None = None,
+    repo_url: str | None = None,
 ) -> None:
     with session_scope() as session:
         record = session.get(AnalysisJobRecord, job_id)
@@ -204,6 +205,8 @@ def update_job_status(
                 record.stage_detail = None
         if summary is not None:
             record.summary = summary
+        if repo_url is not None:
+            record.repo_url = repo_url
         if error_message is not None:
             record.error_message = error_message
         if result is not None:

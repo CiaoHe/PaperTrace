@@ -84,7 +84,6 @@ def test_list_analyses_endpoint_returns_created_jobs() -> None:
         create_response = client.post(
             "/api/v1/analyses",
             json={
-                "repo_url": "https://github.com/microsoft/LoRA",
                 "paper_input": {
                     "source_kind": "arxiv",
                     "source_ref": "https://arxiv.org/abs/2106.09685 LoRA",
@@ -106,7 +105,6 @@ def test_create_analysis_runs_fixture_pipeline() -> None:
         response = client.post(
             "/api/v1/analyses",
             json={
-                "repo_url": "https://github.com/microsoft/LoRA",
                 "paper_input": {
                     "source_kind": "arxiv",
                     "source_ref": "https://arxiv.org/abs/2106.09685 LoRA",
@@ -117,6 +115,7 @@ def test_create_analysis_runs_fixture_pipeline() -> None:
         assert response.status_code == 202
         body = response.json()
         job_id = body["job"]["id"]
+        assert body["job"]["repo_url"] == "https://github.com/microsoft/LoRA"
 
         job_response = client.get(f"/api/v1/analyses/{job_id}")
         assert job_response.status_code == 200
@@ -140,7 +139,6 @@ def test_create_analysis_accepts_structured_paper_input() -> None:
         response = client.post(
             "/api/v1/analyses",
             json={
-                "repo_url": "https://github.com/microsoft/LoRA",
                 "paper_input": {
                     "source_kind": "arxiv",
                     "source_ref": "https://arxiv.org/abs/2106.09685 LoRA",
@@ -151,6 +149,7 @@ def test_create_analysis_accepts_structured_paper_input() -> None:
         assert response.status_code == 202
         body = response.json()
         job_id = body["job"]["id"]
+        assert body["job"]["repo_url"] == "https://github.com/microsoft/LoRA"
 
         result_response = client.get(f"/api/v1/analyses/{job_id}/result")
         assert result_response.status_code == 200
@@ -163,7 +162,6 @@ def test_create_analysis_accepts_multipart_pdf_upload() -> None:
         response = client.post(
             "/api/v1/analyses",
             data={
-                "repo_url": "https://github.com/microsoft/LoRA",
                 "paper_input": json.dumps(
                     {
                         "source_kind": "pdf_file",
@@ -187,6 +185,7 @@ def test_create_analysis_accepts_multipart_pdf_upload() -> None:
         body = response.json()
         job_id = body["job"]["id"]
         assert body["job"]["paper_source"].endswith(".pdf")
+        assert body["job"]["repo_url"] == "https://github.com/microsoft/LoRA"
 
         result_response = client.get(f"/api/v1/analyses/{job_id}/result")
         assert result_response.status_code == 200
@@ -200,7 +199,6 @@ def test_create_analysis_accepts_structured_multipart_non_file_input() -> None:
         response = client.post(
             "/api/v1/analyses",
             data={
-                "repo_url": "https://github.com/microsoft/LoRA",
                 "paper_input": json.dumps(
                     {
                         "source_kind": "arxiv",
@@ -213,6 +211,7 @@ def test_create_analysis_accepts_structured_multipart_non_file_input() -> None:
     assert response.status_code == 202
     body = response.json()
     assert body["job"]["paper_source"] == "https://arxiv.org/abs/2106.09685 LoRA"
+    assert body["job"]["repo_url"] == "https://github.com/microsoft/LoRA"
 
 
 def test_create_analysis_rejects_multipart_input_kind_mismatch() -> None:
@@ -220,7 +219,6 @@ def test_create_analysis_rejects_multipart_input_kind_mismatch() -> None:
         response = client.post(
             "/api/v1/analyses",
             data={
-                "repo_url": "https://github.com/microsoft/LoRA",
                 "paper_input": json.dumps(
                     {
                         "source_kind": "arxiv",
@@ -266,11 +264,11 @@ def test_create_analysis_keeps_legacy_paper_source_compatibility() -> None:
             "/api/v1/analyses",
             json={
                 "paper_source": "https://arxiv.org/abs/2106.09685 LoRA",
-                "repo_url": "https://github.com/microsoft/LoRA",
             },
         )
 
     assert response.status_code == 202
     body = response.json()
     assert body["job"]["stage_progress"] is not None
+    assert body["job"]["repo_url"] == "https://github.com/microsoft/LoRA"
     assert body["job"]["timeline"]

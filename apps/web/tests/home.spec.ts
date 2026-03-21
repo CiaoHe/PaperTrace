@@ -94,7 +94,6 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
 test("uploads a PDF and renders pdf-file provenance", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("textbox", { name: "Paper source" }).fill("");
-  await page.getByLabel("Repository URL").fill("https://github.com/microsoft/LoRA");
   await page.getByLabel("PDF upload").setInputFiles({
     name: "lora-upload.pdf",
     mimeType: "application/pdf",

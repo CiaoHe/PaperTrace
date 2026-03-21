@@ -16,7 +16,6 @@ import {
 } from "@/lib/api";
 
 const DEFAULT_PAPER = "https://arxiv.org/abs/2106.09685 LoRA";
-const DEFAULT_REPO = "https://github.com/microsoft/LoRA";
 const DEFAULT_PAPER_SOURCE_KIND: StructuredPaperSourceKind = "arxiv";
 const JOB_STAGE_ORDER = [
   "paper_fetch",
@@ -67,12 +66,10 @@ function jobTimeline(job: JobStatusResponse) {
 export function AnalysisForm() {
   const paperSourceId = useId();
   const paperFileId = useId();
-  const repoUrlId = useId();
   const paperSourceKindId = useId();
   const [paperSource, setPaperSource] = useState(DEFAULT_PAPER);
   const [paperFile, setPaperFile] = useState<File | null>(null);
   const [paperSourceKind, setPaperSourceKind] = useState<StructuredPaperSourceKind>(DEFAULT_PAPER_SOURCE_KIND);
-  const [repoUrl, setRepoUrl] = useState(DEFAULT_REPO);
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [examples, setExamples] = useState<GoldenCaseExample[]>([]);
   const [jobs, setJobs] = useState<JobStatusResponse[]>([]);
@@ -140,10 +137,8 @@ export function AnalysisForm() {
         ? await createAnalysis({
             paperFile,
             paperSource: paperSource || undefined,
-            repoUrl,
           })
         : await createAnalysis({
-            repo_url: repoUrl,
             paper_input: {
               source_kind: paperSourceKind,
               source_ref: paperSource,
@@ -168,7 +163,6 @@ export function AnalysisForm() {
     setError(null);
     setPaperSource(listedJob.paper_source);
     setPaperFile(null);
-    setRepoUrl(listedJob.repo_url);
     setJob(listedJob);
 
     if (listedJob.status === "failed") {
@@ -195,7 +189,6 @@ export function AnalysisForm() {
     setPaperSource(example.paper_source);
     setPaperFile(null);
     setPaperSourceKind(example.paper_source.includes(".pdf") ? "pdf_url" : "arxiv");
-    setRepoUrl(example.repo_url);
     setError(null);
   }
 
@@ -205,8 +198,8 @@ export function AnalysisForm() {
         <div className="panel-inner">
           <h2>Run a local analysis</h2>
           <p className="muted">
-            Submit an arXiv or PDF reference plus a GitHub repository URL. The local MVP prefers live public fetch and
-            shallow-clone analysis, then falls back to fixtures when a stage cannot complete.
+            Submit an arXiv or PDF reference. The backend resolves the implementation repository from the paper, then
+            runs live public fetch and shallow-clone analysis with fixture fallbacks when a stage cannot complete.
           </p>
           <form onSubmit={onSubmit}>
             {examples.length > 0 ? (
@@ -258,15 +251,6 @@ export function AnalysisForm() {
               <p className="muted">
                 {paperFile ? `Selected file: ${paperFile.name}` : "Choose a local PDF to submit multipart/form-data."}
               </p>
-            </div>
-            <div className="field">
-              <label htmlFor={repoUrlId}>Repository URL</label>
-              <input
-                id={repoUrlId}
-                name="repo-url"
-                value={repoUrl}
-                onChange={(event) => setRepoUrl(event.target.value)}
-              />
             </div>
             <div className="actions">
               <button className="button" disabled={submitting} type="submit">
@@ -355,7 +339,7 @@ export function AnalysisForm() {
               <div className="list">
                 {jobs.map((listedJob) => (
                   <div className="item" key={listedJob.id}>
-                    <h4>{listedJob.repo_url}</h4>
+                    <h4>{listedJob.repo_url || "Repository pending inference"}</h4>
                     <p>
                       {listedJob.status} · {jobStageLabel(listedJob)}
                     </p>
@@ -376,7 +360,7 @@ export function AnalysisForm() {
 
         {result ? (
           <div id={job ? `job-${job.id}` : undefined}>
-            <AnalysisResultsWorkbench jobId={job?.id ?? null} result={result} submittedRepoUrl={repoUrl} />
+            <AnalysisResultsWorkbench jobId={job?.id ?? null} result={result} submittedRepoUrl={job?.repo_url ?? ""} />
           </div>
         ) : null}
       </section>

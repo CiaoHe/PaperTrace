@@ -86,7 +86,7 @@ async def build_analysis_request_from_multipart(request: Request) -> AnalysisReq
 
     return AnalysisRequest(
         paper_source=resolved_paper_source,
-        repo_url=normalize_repo_url(multipart_payload.repo_url),
+        repo_url=normalize_repo_url(multipart_payload.repo_url) if multipart_payload.repo_url else "",
     )
 
 
@@ -142,7 +142,7 @@ def get_analyses() -> JobsResponse:
                         "anyOf": [
                             {
                                 "type": "object",
-                                "required": ["paper_input", "repo_url"],
+                                "required": ["paper_input"],
                                 "properties": {
                                     "repo_url": {"type": "string"},
                                     "paper_input": {
@@ -181,7 +181,6 @@ def get_analyses() -> JobsResponse:
                 "multipart/form-data": {
                     "schema": {
                         "type": "object",
-                        "required": ["repo_url"],
                         "properties": {
                             "paper_input": {
                                 "type": "string",
@@ -221,14 +220,14 @@ async def create_analysis(
             try:
                 payload = CreateAnalysisRequest.model_validate(raw_payload)
                 paper_source = payload.paper_input.source_ref
-                resolved_repo_url = payload.repo_url
+                resolved_repo_url = payload.repo_url or ""
             except ValidationError:
                 legacy_payload = LegacyCreateAnalysisRequest.model_validate(raw_payload)
                 paper_source = legacy_payload.paper_source
-                resolved_repo_url = legacy_payload.repo_url
+                resolved_repo_url = legacy_payload.repo_url or ""
             analysis_request = AnalysisRequest(
                 paper_source=normalize_paper_source(paper_source),
-                repo_url=normalize_repo_url(resolved_repo_url),
+                repo_url=normalize_repo_url(resolved_repo_url) if resolved_repo_url else "",
             )
     except HTTPException:
         raise

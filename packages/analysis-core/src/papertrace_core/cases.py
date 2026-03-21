@@ -41,7 +41,7 @@ GOLDEN_CASES: tuple[GoldenCase, ...] = (
 
 
 def detect_case_slug(request: AnalysisRequest) -> str:
-    haystack = f"{request.paper_source} {request.repo_url}".lower()
+    haystack = f"{request.paper_source} {request.repo_url or ''}".lower()
     for golden_case in GOLDEN_CASES:
         if any(alias in haystack for alias in golden_case.aliases):
             return golden_case.slug

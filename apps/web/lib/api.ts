@@ -17,7 +17,6 @@ export type StructuredPaperSourceKind = "arxiv" | "pdf_url" | "text_reference";
 export interface CreateAnalysisUploadPayload {
   paperFile: File;
   paperSource?: string;
-  repoUrl: string;
 }
 
 async function parseResponse<T>(response: Response): Promise<T> {
@@ -38,7 +37,6 @@ export async function createAnalysis(
           method: "POST",
           body: (() => {
             const formData = new FormData();
-            formData.set("repo_url", payload.repoUrl);
             formData.set("paper_file", payload.paperFile);
             formData.set(
               "paper_input",

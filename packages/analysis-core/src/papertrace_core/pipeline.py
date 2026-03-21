@@ -54,6 +54,7 @@ def process_analysis_job(job_id: str, request: AnalysisRequest) -> AnalysisResul
             stage_detail="Analysis result persisted.",
             summary=result.summary,
             result=result,
+            repo_url=request.repo_url,
         )
         return result
     except Exception as exc:
@@ -64,5 +65,6 @@ def process_analysis_job(job_id: str, request: AnalysisRequest) -> AnalysisResul
             stage_progress=None,
             stage_detail=f"Analysis failed during {(active_stage or JobStage.PAPER_FETCH).value}.",
             error_message=str(exc),
+            repo_url=request.repo_url or None,
         )
         raise
