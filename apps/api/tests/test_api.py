@@ -2,15 +2,33 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Generator
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 os.environ["CELERY_TASK_ALWAYS_EAGER"] = "true"
-os.environ["DATABASE_URL"] = f"sqlite+pysqlite:///{Path('.local/test-api.db').resolve()}"
+TEST_DB_PATH = Path(".local/test-api.db").resolve()
+os.environ["DATABASE_URL"] = f"sqlite+pysqlite:///{TEST_DB_PATH}"
 os.environ["ENABLE_LIVE_BY_DEFAULT"] = "false"
 
-from papertrace_api.main import app
+from papertrace_api.main import app  # noqa: E402
+from papertrace_core.settings import get_settings  # noqa: E402
+from papertrace_core.storage import reset_storage_state  # noqa: E402
+
+get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def reset_db() -> Generator[None, None, None]:
+    get_settings.cache_clear()
+    reset_storage_state()
+    TEST_DB_PATH.unlink(missing_ok=True)
+    yield
+    get_settings.cache_clear()
+    reset_storage_state()
+    TEST_DB_PATH.unlink(missing_ok=True)
 
 
 def build_pdf_bytes(title: str, body: str) -> bytes:
@@ -92,12 +110,14 @@ def test_list_analyses_endpoint_returns_created_jobs() -> None:
         )
 
         assert create_response.status_code == 202
+        created_job_id = create_response.json()["job"]["id"]
 
         list_response = client.get("/api/v1/analyses")
         assert list_response.status_code == 200
         jobs = list_response.json()["jobs"]
         assert len(jobs) >= 1
-        assert jobs[0]["repo_url"] == "https://github.com/microsoft/LoRA"
+        created_job = next(job for job in jobs if job["id"] == created_job_id)
+        assert created_job["repo_url"] == "https://github.com/microsoft/LoRA"
 
 
 def test_create_analysis_runs_fixture_pipeline() -> None:
@@ -157,6 +177,40 @@ def test_create_analysis_accepts_structured_paper_input() -> None:
         assert result_body["metadata"]["paper_source_kind"] == "arxiv"
 
 
+def test_create_analysis_reuses_existing_job_for_same_paper_source() -> None:
+    payload = {
+        "paper_input": {
+            "source_kind": "arxiv",
+            "source_ref": "https://arxiv.org/abs/2106.09685 LoRA",
+        }
+    }
+
+    with TestClient(app) as client:
+        first_response = client.post("/api/v1/analyses", json=payload)
+        second_response = client.post("/api/v1/analyses", json=payload)
+
+    assert first_response.status_code == 202
+    assert second_response.status_code == 202
+    assert first_response.json()["job"]["id"] == second_response.json()["job"]["id"]
+
+
+def test_create_analysis_force_reanalysis_creates_new_job() -> None:
+    payload = {
+        "paper_input": {
+            "source_kind": "arxiv",
+            "source_ref": "https://arxiv.org/abs/2106.09685 LoRA",
+        }
+    }
+
+    with TestClient(app) as client:
+        first_response = client.post("/api/v1/analyses", json=payload)
+        second_response = client.post("/api/v1/analyses", json={**payload, "force_reanalysis": True})
+
+    assert first_response.status_code == 202
+    assert second_response.status_code == 202
+    assert first_response.json()["job"]["id"] != second_response.json()["job"]["id"]
+
+
 def test_create_analysis_accepts_multipart_pdf_upload() -> None:
     with TestClient(app) as client:
         response = client.post(
@@ -192,6 +246,44 @@ def test_create_analysis_accepts_multipart_pdf_upload() -> None:
         result_body = result_response.json()["result"]
         assert result_body["metadata"]["paper_source_kind"] == "pdf_file"
         assert result_body["contributions"]
+
+
+def test_create_analysis_reuses_existing_uploaded_pdf_job() -> None:
+    files = {
+        "paper_file": (
+            "lora-upload.pdf",
+            build_pdf_bytes(
+                title="LoRA Upload",
+                body="Abstract low-rank adaptation modules keep the pretrained backbone frozen.",
+            ),
+            "application/pdf",
+        )
+    }
+
+    with TestClient(app) as client:
+        first_response = client.post(
+            "/api/v1/analyses",
+            data={"paper_input": json.dumps({"source_kind": "pdf_file", "source_ref": "lora-upload.pdf"})},
+            files=files,
+        )
+        second_response = client.post(
+            "/api/v1/analyses",
+            data={"paper_input": json.dumps({"source_kind": "pdf_file", "source_ref": "lora-upload.pdf"})},
+            files={
+                "paper_file": (
+                    "lora-upload.pdf",
+                    build_pdf_bytes(
+                        title="LoRA Upload",
+                        body="Abstract low-rank adaptation modules keep the pretrained backbone frozen.",
+                    ),
+                    "application/pdf",
+                )
+            },
+        )
+
+    assert first_response.status_code == 202
+    assert second_response.status_code == 202
+    assert first_response.json()["job"]["id"] == second_response.json()["job"]["id"]
 
 
 def test_create_analysis_accepts_structured_multipart_non_file_input() -> None:

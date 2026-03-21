@@ -481,6 +481,8 @@ export interface operations {
             content: {
                 "application/json": {
                     repo_url?: string;
+                    /** @default false */
+                    force_reanalysis?: boolean;
                     paper_input: {
                         /** @constant */
                         source_kind: "arxiv";
@@ -506,6 +508,8 @@ export interface operations {
                      */
                     paper_source_kind?: "arxiv" | "pdf_url" | "pdf_file" | "text_reference";
                     repo_url?: string;
+                    /** @default false */
+                    force_reanalysis?: boolean;
                     /** Format: binary */
                     paper_file?: string;
                 };

@@ -48,11 +48,13 @@ MultipartPaperSourceInput = Annotated[
 class CreateAnalysisRequest(BaseModel):
     repo_url: str | None = None
     paper_input: StructuredPaperSourceInput
+    force_reanalysis: bool = False
 
 
 class LegacyCreateAnalysisRequest(BaseModel):
     repo_url: str | None = None
     paper_source: str = Field(min_length=1)
+    force_reanalysis: bool = False
 
 
 class CreateAnalysisMultipartRequest(BaseModel):
@@ -60,6 +62,7 @@ class CreateAnalysisMultipartRequest(BaseModel):
     paper_input: MultipartPaperSourceInput | None = None
     paper_source: str | None = None
     paper_source_kind: PaperSourceKind | None = None
+    force_reanalysis: bool = False
 
     @model_validator(mode="before")
     @classmethod

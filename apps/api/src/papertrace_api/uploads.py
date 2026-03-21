@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from uuid import uuid4
@@ -27,20 +28,27 @@ async def persist_uploaded_pdf(upload: UploadFile, settings: Settings) -> str:
 
     upload_dir = settings.local_data_dir / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
-    target_path = upload_dir / f"{sanitize_filename(Path(filename).stem)}-{uuid4().hex[:10]}.pdf"
+    temp_path = upload_dir / f".upload-{uuid4().hex}.pdf"
 
     total_size = 0
-    with target_path.open("wb") as output:
+    digest = hashlib.sha256()
+    with temp_path.open("wb") as output:
         while chunk := await upload.read(1024 * 1024):
             total_size += len(chunk)
             if total_size > settings.paper_upload_max_bytes:
                 output.close()
-                target_path.unlink(missing_ok=True)
+                temp_path.unlink(missing_ok=True)
                 raise HTTPException(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                     detail="Uploaded PDF exceeds PAPER_UPLOAD_MAX_BYTES",
                 )
+            digest.update(chunk)
             output.write(chunk)
 
     await upload.close()
+    target_path = upload_dir / f"{sanitize_filename(Path(filename).stem)}-{digest.hexdigest()}.pdf"
+    if target_path.exists():
+        temp_path.unlink(missing_ok=True)
+    else:
+        temp_path.replace(target_path)
     return str(target_path)

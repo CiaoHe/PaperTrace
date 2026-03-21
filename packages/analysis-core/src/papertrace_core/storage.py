@@ -152,6 +152,25 @@ def create_job(request: AnalysisRequest) -> JobSummary:
     )
 
 
+def find_reusable_job_by_paper_source(paper_source: str) -> JobStatusResponse | None:
+    reusable_statuses = (
+        JobStatus.QUEUED.value,
+        JobStatus.RUNNING.value,
+        JobStatus.SUCCEEDED.value,
+    )
+    with session_scope() as session:
+        statement = (
+            select(AnalysisJobRecord)
+            .where(AnalysisJobRecord.paper_source == paper_source)
+            .where(AnalysisJobRecord.status.in_(reusable_statuses))
+            .order_by(AnalysisJobRecord.created_at.desc())
+        )
+        record = session.scalars(statement).first()
+        if record is None:
+            return None
+        return _build_job_status_response(record)
+
+
 def get_job_summary(job_id: str) -> JobStatusResponse | None:
     with session_scope() as session:
         record = session.get(AnalysisJobRecord, job_id)

@@ -12,6 +12,7 @@ from papertrace_core.models import AnalysisRequest, HealthResponse, PaperSourceK
 from papertrace_core.settings import get_settings
 from papertrace_core.storage import (
     create_job,
+    find_reusable_job_by_paper_source,
     get_engine,
     get_job_result,
     get_job_summary,
@@ -55,7 +56,7 @@ app.add_middleware(
 )
 
 
-async def build_analysis_request_from_multipart(request: Request) -> AnalysisRequest:
+async def build_analysis_request_from_multipart(request: Request) -> tuple[AnalysisRequest, bool]:
     settings = get_settings()
     form = await request.form()
     repo_url = form.get("repo_url")
@@ -63,14 +64,16 @@ async def build_analysis_request_from_multipart(request: Request) -> AnalysisReq
     paper_source = form.get("paper_source")
     paper_source_kind = form.get("paper_source_kind")
     paper_file = form.get("paper_file")
-    multipart_payload = CreateAnalysisMultipartRequest.model_validate(
-        {
-            "repo_url": repo_url,
-            "paper_input": paper_input if isinstance(paper_input, str) else None,
-            "paper_source": paper_source if isinstance(paper_source, str) else None,
-            "paper_source_kind": paper_source_kind if isinstance(paper_source_kind, str) else None,
-        }
-    )
+    raw_payload = {
+        "repo_url": repo_url,
+        "paper_input": paper_input if isinstance(paper_input, str) else None,
+        "paper_source": paper_source if isinstance(paper_source, str) else None,
+        "paper_source_kind": paper_source_kind if isinstance(paper_source_kind, str) else None,
+    }
+    force_reanalysis = form.get("force_reanalysis")
+    if force_reanalysis is not None:
+        raw_payload["force_reanalysis"] = force_reanalysis
+    multipart_payload = CreateAnalysisMultipartRequest.model_validate(raw_payload)
     uploaded_file = paper_file if isinstance(paper_file, UploadFile) else None
 
     if uploaded_file is not None:
@@ -84,9 +87,12 @@ async def build_analysis_request_from_multipart(request: Request) -> AnalysisReq
     else:
         resolved_paper_source = normalize_paper_source(str(multipart_payload.paper_source or ""))
 
-    return AnalysisRequest(
-        paper_source=resolved_paper_source,
-        repo_url=normalize_repo_url(multipart_payload.repo_url) if multipart_payload.repo_url else "",
+    return (
+        AnalysisRequest(
+            paper_source=resolved_paper_source,
+            repo_url=normalize_repo_url(multipart_payload.repo_url) if multipart_payload.repo_url else "",
+        ),
+        multipart_payload.force_reanalysis,
     )
 
 
@@ -145,6 +151,10 @@ def get_analyses() -> JobsResponse:
                                 "required": ["paper_input"],
                                 "properties": {
                                     "repo_url": {"type": "string"},
+                                    "force_reanalysis": {
+                                        "type": "boolean",
+                                        "default": False,
+                                    },
                                     "paper_input": {
                                         "oneOf": [
                                             {
@@ -199,6 +209,7 @@ def get_analyses() -> JobsResponse:
                                 "description": "Optional explicit source-kind hint for non-file submissions.",
                             },
                             "repo_url": {"type": "string"},
+                            "force_reanalysis": {"type": "boolean", "default": False},
                             "paper_file": {"type": "string", "format": "binary"},
                         },
                     }
@@ -212,8 +223,9 @@ async def create_analysis(
 ) -> CreateAnalysisResponse:
     try:
         content_type = request.headers.get("content-type", "")
+        force_reanalysis = False
         if content_type.startswith(("multipart/form-data", "application/x-www-form-urlencoded")):
-            analysis_request = await build_analysis_request_from_multipart(request)
+            analysis_request, force_reanalysis = await build_analysis_request_from_multipart(request)
         else:
             raw_payload = await request.json()
             resolved_repo_url: str
@@ -221,10 +233,12 @@ async def create_analysis(
                 payload = CreateAnalysisRequest.model_validate(raw_payload)
                 paper_source = payload.paper_input.source_ref
                 resolved_repo_url = payload.repo_url or ""
+                force_reanalysis = payload.force_reanalysis
             except ValidationError:
                 legacy_payload = LegacyCreateAnalysisRequest.model_validate(raw_payload)
                 paper_source = legacy_payload.paper_source
                 resolved_repo_url = legacy_payload.repo_url or ""
+                force_reanalysis = legacy_payload.force_reanalysis
             analysis_request = AnalysisRequest(
                 paper_source=normalize_paper_source(paper_source),
                 repo_url=normalize_repo_url(resolved_repo_url) if resolved_repo_url else "",
@@ -236,6 +250,10 @@ async def create_analysis(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
+    if not force_reanalysis:
+        reusable_job = find_reusable_job_by_paper_source(analysis_request.paper_source)
+        if reusable_job is not None:
+            return CreateAnalysisResponse(job=reusable_job)
     job = create_job(analysis_request)
     enqueue_analysis.delay(job.id, analysis_request.model_dump(mode="json"))
     summary = get_job_summary(job.id)
