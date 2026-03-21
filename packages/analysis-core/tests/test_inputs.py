@@ -27,6 +27,11 @@ def test_normalize_repo_url_canonicalizes_git_suffix() -> None:
     assert normalized == "https://github.com/openai/clip"
 
 
+def test_normalize_repo_url_trims_trailing_punctuation() -> None:
+    normalized = normalize_repo_url("https://github.com/siyan-zhao/OPSD.")
+    assert normalized == "https://github.com/siyan-zhao/OPSD"
+
+
 def test_normalize_repo_url_rejects_non_github_url() -> None:
     try:
         normalize_repo_url("https://gitlab.com/openai/clip")

@@ -40,12 +40,12 @@ GOLDEN_CASES: tuple[GoldenCase, ...] = (
 )
 
 
-def detect_case_slug(request: AnalysisRequest) -> str:
+def detect_case_slug(request: AnalysisRequest) -> str | None:
     haystack = f"{request.paper_source} {request.repo_url or ''}".lower()
     for golden_case in GOLDEN_CASES:
         if any(alias in haystack for alias in golden_case.aliases):
             return golden_case.slug
-    return GOLDEN_CASES[0].slug
+    return None
 
 
 def default_case_examples() -> list[GoldenCase]:

@@ -224,6 +224,8 @@ export interface components {
             patch_id?: string | null;
             /** File Path */
             file_path: string;
+            /** Original File Path */
+            original_file_path?: string | null;
             /** Start Line */
             start_line: number;
             /** End Line */

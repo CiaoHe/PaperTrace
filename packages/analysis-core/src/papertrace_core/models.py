@@ -98,6 +98,7 @@ class BaseRepoCandidate(BaseModel):
 class DiffCodeAnchor(BaseModel):
     patch_id: str | None = None
     file_path: str
+    original_file_path: str | None = None
     start_line: int
     end_line: int
     original_start_line: int | None = None

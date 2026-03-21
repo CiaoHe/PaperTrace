@@ -11,6 +11,8 @@
       "packages/**/*.ts",
       "*.json",
       "*.jsonc",
+      "!.cache",
+      "!.local",
       "!apps/web/.next",
       "!packages/contracts/src/openapi.ts"
     ]

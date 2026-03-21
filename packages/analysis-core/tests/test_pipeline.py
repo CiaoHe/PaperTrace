@@ -82,27 +82,55 @@ def test_detect_case_slug_prefers_lora_fixture() -> None:
     assert detect_case_slug(request) == "lora"
 
 
-def test_run_analysis_returns_fixture_payload() -> None:
+def test_detect_case_slug_returns_none_for_unknown_paper() -> None:
+    request = AnalysisRequest(
+        paper_source="https://arxiv.org/abs/2601.18734",
+        repo_url="https://github.com/siyan-zhao/OPSD",
+    )
+
+    assert detect_case_slug(request) is None
+
+
+def test_run_analysis_returns_fixture_payload(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ENABLE_LIVE_BY_DEFAULT", "false")
+    monkeypatch.setenv("ENABLE_LIVE_PAPER_FETCH", "false")
+    monkeypatch.setenv("ENABLE_LIVE_REPO_TRACE", "false")
+    monkeypatch.setenv("ENABLE_LIVE_REPO_ANALYSIS", "false")
+    get_settings.cache_clear()
     request = AnalysisRequest(
         paper_source="https://arxiv.org/abs/2305.18290 DPO",
         repo_url="https://github.com/huggingface/trl",
     )
 
-    result = run_analysis(request)
+    try:
+        result = run_analysis(request)
+    finally:
+        get_settings.cache_clear()
 
     assert result.case_slug == "dpo"
     assert result.selected_base_repo.repo_url == "https://github.com/huggingface/trl"
     assert len(result.diff_clusters) == 1
 
 
-def test_run_analysis_emits_progress_events_in_stage_order() -> None:
+def test_run_analysis_emits_progress_events_in_stage_order(monkeypatch: Any) -> None:
+    monkeypatch.setenv("ENABLE_LIVE_BY_DEFAULT", "false")
+    monkeypatch.setenv("ENABLE_LIVE_PAPER_FETCH", "false")
+    monkeypatch.setenv("ENABLE_LIVE_REPO_TRACE", "false")
+    monkeypatch.setenv("ENABLE_LIVE_REPO_ANALYSIS", "false")
+    get_settings.cache_clear()
     request = AnalysisRequest(
         paper_source="https://arxiv.org/abs/2205.14135 Flash Attention",
         repo_url="https://github.com/Dao-AILab/flash-attention",
     )
     progress_events: list[tuple[JobStage, float, str]] = []
 
-    result = run_analysis(request, progress=lambda stage, ratio, detail: progress_events.append((stage, ratio, detail)))
+    try:
+        result = run_analysis(
+            request,
+            progress=lambda stage, ratio, detail: progress_events.append((stage, ratio, detail)),
+        )
+    finally:
+        get_settings.cache_clear()
 
     assert result.case_slug == "flash-attention"
     assert progress_events
@@ -163,10 +191,10 @@ def test_repo_tracer_prefers_readme_declaration_over_paper_mention() -> None:
         request, paper_document, []
     )
 
-    assert trace_output.selected_base_repo.strategy == "readme_declaration"
+    assert trace_output.selected_base_repo.strategy == "readme_base_declaration"
     assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/transformers"
     assert len(trace_output.candidates) == 1
-    assert trace_output.candidates[0].strategy == "readme_declaration"
+    assert trace_output.candidates[0].strategy == "readme_base_declaration"
     assert trace_output.mode == ProcessorMode.STRATEGY_CHAIN
 
 

@@ -80,6 +80,7 @@ from papertrace_core.settings import Settings, get_settings
 
 STRATEGY_PRIORITY: dict[str, int] = {
     "github_fork": 5,
+    "readme_base_declaration": 5,
     "readme_declaration": 4,
     "framework_signature": 4,
     "fossil_evidence": 4,
@@ -117,6 +118,7 @@ GITHUB_URL_RE = re.compile(r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 SYMBOL_RE = re.compile(r"\b(?:class|def)\s+([A-Za-z_][A-Za-z0-9_]*)")
 IMPORT_RE = re.compile(r"\b(?:from|import)\s+([A-Za-z_][A-Za-z0-9_\.]*)")
+BASE_CLASS_RE = re.compile(r"class\s+[A-Za-z_][A-Za-z0-9_]*\((?P<bases>[^)]*)\)")
 FINGERPRINT_SCORE_THRESHOLD = 0.12
 DIRECT_DEPENDENCY_RE = re.compile(
     r"(?:git\+)?(https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?:\.git)?(?:@[A-Za-z0-9_.-]+)?"
@@ -165,6 +167,19 @@ TOPIC_STOPWORDS = {
     "with",
 }
 AUTHOR_STOPWORDS = {"jr", "sr", "ii", "iii", "iv", "dr", "prof"}
+GENERIC_CASE_SLUG = "custom"
+URL_TRAILING_PUNCTUATION = ").,;:!?]}>\"'"
+LOCAL_SIGNAL_STRATEGIES = {
+    "github_fork",
+    "readme_declaration",
+    "framework_signature",
+    "fossil_evidence",
+    "metadata_url",
+    "dependency_archaeology",
+    "code_reference",
+    "code_fingerprint",
+    "shape_similarity",
+}
 
 
 @dataclass(frozen=True)
@@ -178,6 +193,7 @@ class FrameworkSignature:
 @dataclass(frozen=True)
 class ChangedFile:
     relative_path: str
+    base_relative_path: str | None
     base_content: str | None
     content: str
     change_type: DiffChangeType
@@ -232,9 +248,19 @@ FRAMEWORK_SIGNATURES: dict[str, FrameworkSignature] = {
     ),
     "trl": FrameworkSignature(
         repo_url="https://github.com/huggingface/trl",
-        imports=("trl", "DPOTrainer", "PPOTrainer", "reward_trainer"),
-        base_classes=("DPOTrainer", "PPOTrainer"),
-        dir_markers=("trl/trainer",),
+        imports=(
+            "trl",
+            "DPOTrainer",
+            "PPOTrainer",
+            "SFTTrainer",
+            "GRPOTrainer",
+            "GRPOConfig",
+            "TrlParser",
+            "reward_trainer",
+            "GOLDConfig",
+        ),
+        base_classes=("DPOTrainer", "PPOTrainer", "SFTTrainer", "GRPOTrainer"),
+        dir_markers=("trl/trainer", "trl/experimental/gold"),
     ),
     "triton": FrameworkSignature(
         repo_url="https://github.com/openai/triton",
@@ -517,6 +543,7 @@ def stable_patch_id(*parts: str) -> str:
 
 def build_file_code_anchors(
     relative_path: str,
+    base_relative_path: str | None,
     base_content: str | None,
     target_content: str,
     semantic_tags: list[str],
@@ -555,6 +582,7 @@ def build_file_code_anchors(
             DiffCodeAnchor(
                 patch_id=stable_patch_id(
                     relative_path,
+                    base_relative_path or "",
                     str(start_line),
                     str(end_line),
                     str(original_start_line or 0),
@@ -564,6 +592,7 @@ def build_file_code_anchors(
                     opcode,
                 ),
                 file_path=relative_path,
+                original_file_path=(base_relative_path or relative_path) if original_snippet else None,
                 start_line=start_line,
                 end_line=end_line,
                 original_start_line=original_start_line,
@@ -585,6 +614,7 @@ def build_file_code_anchors(
         DiffCodeAnchor(
             patch_id=stable_patch_id(
                 relative_path,
+                base_relative_path or "",
                 "1",
                 str(len(fallback_lines)),
                 "1" if base_lines else "0",
@@ -594,6 +624,7 @@ def build_file_code_anchors(
                 "context",
             ),
             file_path=relative_path,
+            original_file_path=(base_relative_path or relative_path) if base_lines else None,
             start_line=1,
             end_line=len(fallback_lines),
             original_start_line=1 if base_lines else None,
@@ -626,6 +657,100 @@ def extract_local_import_targets(content: str) -> set[str]:
         parts = [part for part in imported_name.split(".") if part]
         targets.update(part.lower() for part in parts[-2:])
     return targets
+
+
+def extract_import_modules(content: str) -> set[str]:
+    return {imported_name.strip() for imported_name in IMPORT_RE.findall(content) if imported_name.strip()}
+
+
+def extract_base_class_names(content: str) -> set[str]:
+    base_class_names: set[str] = set()
+    for match in BASE_CLASS_RE.finditer(content):
+        for raw_base in match.group("bases").split(","):
+            base_name = raw_base.strip().split("[", 1)[0].split(".", 1)[-1]
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", base_name):
+                base_class_names.add(base_name)
+    return base_class_names
+
+
+def path_signature_tokens(relative_path: str) -> set[str]:
+    path = Path(relative_path)
+    tokens = {part.lower() for part in path.parts if len(part) >= 3}
+    if len(path.stem) >= 3:
+        tokens.add(path.stem.lower())
+    suffix = path.suffix.lower()
+    if len(suffix) > 1:
+        tokens.add(suffix)
+    return tokens
+
+
+def import_module_path_candidates(import_modules: set[str]) -> list[str]:
+    candidates: list[str] = []
+    for import_name in sorted(import_modules):
+        module_path = import_name.replace(".", "/")
+        candidates.extend([f"{module_path}.py", f"{module_path}/__init__.py"])
+    return candidates
+
+
+def build_base_symbol_index(snapshot: dict[str, str]) -> dict[str, list[str]]:
+    symbol_index: dict[str, list[str]] = {}
+    for relative_path, content in snapshot.items():
+        for symbol_name in SYMBOL_RE.findall(content):
+            symbol_index.setdefault(symbol_name, []).append(relative_path)
+    return symbol_index
+
+
+def choose_base_file_match(
+    target_relative_path: str,
+    target_content: str,
+    base_snapshot: dict[str, str],
+    semantic_tags: list[str],
+) -> tuple[str | None, str | None]:
+    if target_relative_path in base_snapshot:
+        return target_relative_path, base_snapshot[target_relative_path]
+
+    import_modules = extract_import_modules(target_content)
+    import_path_candidates = import_module_path_candidates(import_modules)
+    for candidate_path in import_path_candidates:
+        candidate_content = base_snapshot.get(candidate_path)
+        if candidate_content is not None:
+            return candidate_path, candidate_content
+
+    base_symbol_index = build_base_symbol_index(base_snapshot)
+    base_class_names = extract_base_class_names(target_content)
+    for base_class_name in sorted(base_class_names):
+        matched_paths = base_symbol_index.get(base_class_name, [])
+        if len(matched_paths) == 1:
+            matched_path = matched_paths[0]
+            return matched_path, base_snapshot.get(matched_path)
+
+    target_tokens = path_signature_tokens(target_relative_path)
+    target_tokens.update(token.lower() for token in semantic_tags)
+    target_tokens.update(part.lower() for part in extract_local_import_targets(target_content))
+    symbol_tokens = {symbol.lower() for symbol in SYMBOL_RE.findall(target_content)}
+    target_suffix = Path(target_relative_path).suffix.lower()
+
+    best_match_path: str | None = None
+    best_match_score = 0
+    for base_relative_path, base_content in base_snapshot.items():
+        if target_suffix and Path(base_relative_path).suffix.lower() != target_suffix:
+            continue
+        base_tokens = path_signature_tokens(base_relative_path)
+        score = 0
+        if Path(base_relative_path).stem.lower() == Path(target_relative_path).stem.lower():
+            score += 6
+        score += 2 * len(target_tokens & base_tokens)
+        base_content_lower = base_content.lower()
+        score += sum(3 for token in semantic_tags if token and token.lower() in base_content_lower)
+        score += sum(2 for token in extract_local_import_targets(target_content) if token in base_content_lower)
+        score += sum(1 for token in symbol_tokens if token in base_content_lower)
+        if score > best_match_score:
+            best_match_score = score
+            best_match_path = base_relative_path
+
+    if best_match_path is None or best_match_score < 5:
+        return None, None
+    return best_match_path, base_snapshot.get(best_match_path)
 
 
 def extract_signature_queries(snapshot: dict[str, str]) -> list[tuple[str, str]]:
@@ -670,7 +795,7 @@ class HeuristicPaperParser:
     ) -> ParseOutput:
         case_slug = detect_case_slug(request)
         warnings: list[str] = []
-        heuristic_contributions = infer_document_contributions(case_slug, paper_document)
+        heuristic_contributions = infer_document_contributions(case_slug or "", paper_document)
         if progress is not None:
             progress(JobStage.PAPER_PARSE, 0.1, "Classifying paper sections and extraction lanes.")
         if self.llm_client is not None:
@@ -712,6 +837,18 @@ class HeuristicPaperParser:
                 contributions=heuristic_contributions,
                 mode=ProcessorMode.HEURISTIC,
                 warnings=[*warnings, *parser_gap_warnings(paper_document, heuristic_contributions)],
+            )
+        if case_slug is None:
+            if progress is not None:
+                progress(JobStage.PAPER_PARSE, 1.0, "No structured contributions could be extracted from this paper.")
+            return ParseOutput(
+                contributions=[],
+                mode=ProcessorMode.HEURISTIC,
+                warnings=[
+                    *warnings,
+                    *parser_gap_warnings(paper_document, []),
+                    "Paper parser could not extract structured contributions and had no matching golden fixture.",
+                ],
             )
         fixture = load_golden_case(case_slug)
         if progress is not None:
@@ -776,16 +913,22 @@ def preview_repo_candidate_diff(
     modified_file_total = 0
     new_file_total = 0
     for relative_path, content in target_snapshot.items():
-        base_content = base_snapshot.get(relative_path)
+        base_relative_path, base_content = choose_base_file_match(
+            relative_path,
+            content,
+            base_snapshot,
+            extract_semantic_tags(relative_path, content, contributions),
+        )
         if base_content == content:
             continue
         changed_file_total += 1
-        if base_content is None:
+        if base_relative_path is None:
             new_file_total += 1
         else:
             modified_file_total += 1
         anchors = build_file_code_anchors(
             relative_path,
+            base_relative_path,
             base_content,
             content,
             extract_semantic_tags(relative_path, content, contributions),
@@ -845,11 +988,13 @@ def rerank_repo_candidates_with_preview(
             continue
         preview_by_repo_url[candidate.repo_url] = preview
 
-    def candidate_sort_key(candidate: BaseRepoCandidate) -> tuple[int, int, int, int, int, int, int, float, str]:
+    def candidate_sort_key(candidate: BaseRepoCandidate) -> tuple[int, int, int, int, int, int, int, int, float, str]:
         preview = preview_by_repo_url.get(candidate.repo_url)
+        explicit_base_selected = int(candidate.strategy == "readme_base_declaration")
         if preview is None:
             return (
                 0,
+                explicit_base_selected,
                 0,
                 0,
                 0,
@@ -862,6 +1007,7 @@ def rerank_repo_candidates_with_preview(
         comparable_selected = int(preview.comparable_anchor_count > 0)
         return (
             comparable_selected,
+            explicit_base_selected,
             *preview.score,
             STRATEGY_PRIORITY.get(candidate.strategy, 0),
             candidate.confidence,
@@ -883,6 +1029,38 @@ def rerank_repo_candidates_with_preview(
 
 def unique_repo_urls(repo_urls: list[str]) -> list[str]:
     return list(dict.fromkeys(repo_urls))
+
+
+def has_strong_local_ancestry_signal(candidates: list[BaseRepoCandidate]) -> bool:
+    return any(
+        candidate.strategy in LOCAL_SIGNAL_STRATEGIES and candidate.confidence >= 0.82 for candidate in candidates
+    )
+
+
+def build_generic_result_summary(
+    paper_document: PaperDocument,
+    contributions: list[PaperContribution],
+    selected_base_repo: BaseRepoCandidate,
+) -> str:
+    if contributions:
+        return (
+            f"{paper_document.title} traces to {selected_base_repo.repo_url} with "
+            f"{len(contributions)} extracted contribution hypotheses."
+        )
+    return (
+        f"{paper_document.title} traces to {selected_base_repo.repo_url} with no structured contribution summary yet."
+    )
+
+
+def github_request_headers(settings: Settings) -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "PaperTrace",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if settings.github_token:
+        headers["Authorization"] = f"token {settings.github_token}"
+    return headers
 
 
 def infer_target_repo_from_cases(
@@ -1022,15 +1200,32 @@ def text_contains_alias(haystack: str, alias: str) -> bool:
     return re.search(rf"\b{re.escape(alias)}\b", haystack) is not None
 
 
+def readme_declares_base_relationship(readme_haystack: str, aliases: tuple[str, ...]) -> bool:
+    declaration_markers = (
+        "based on",
+        "built on",
+        "builds on",
+        "as a base",
+        "as the base",
+        "extends",
+        "derived from",
+    )
+    for snippet in readme_haystack.splitlines():
+        normalized_snippet = snippet.strip().lower()
+        if not normalized_snippet:
+            continue
+        if not any(alias in normalized_snippet for alias in aliases):
+            continue
+        if any(marker in normalized_snippet for marker in declaration_markers):
+            return True
+    return False
+
+
 def build_paper_mention_candidates(paper_document: PaperDocument) -> list[BaseRepoCandidate]:
     haystack = paper_document.text.lower()
     candidates: list[BaseRepoCandidate] = []
 
-    for matched_url in GITHUB_URL_RE.findall(paper_document.text):
-        try:
-            repo_url = normalize_repo_url(matched_url)
-        except ValueError:
-            continue
+    for repo_url in extract_github_repo_urls(paper_document.text):
         candidates.append(
             BaseRepoCandidate(
                 repo_url=repo_url,
@@ -1187,28 +1382,38 @@ def build_readme_candidates(
     for repo_url in extract_github_repo_urls(readme_haystack):
         if repo_url == request.repo_url:
             continue
+        aliases = repo_aliases(repo_url)
+        explicit_base_match = readme_declares_base_relationship(readme_haystack, aliases)
         candidates.append(
             BaseRepoCandidate(
                 repo_url=repo_url,
-                strategy="readme_declaration",
-                confidence=0.88 if declaration_match else 0.82,
+                strategy="readme_base_declaration" if explicit_base_match else "readme_declaration",
+                confidence=0.99 if explicit_base_match else (0.88 if declaration_match else 0.82),
                 evidence=f"Repository README includes a direct GitHub upstream reference to {repo_url}.",
             )
         )
 
     for candidate in paper_candidates:
         aliases = repo_aliases(candidate.repo_url)
+        explicit_base_match = readme_declares_base_relationship(readme_haystack, aliases)
         if candidate.repo_url.lower() in readme_haystack or any(alias in readme_haystack for alias in aliases):
             evidence = (
-                f"Repository README declares an upstream relationship with {candidate.repo_url}."
-                if declaration_match
-                else f"Repository README references {candidate.repo_url}."
+                f"Repository README declares an explicit upstream base relationship with {candidate.repo_url}."
+                if explicit_base_match
+                else (
+                    f"Repository README declares an upstream relationship with {candidate.repo_url}."
+                    if declaration_match
+                    else f"Repository README references {candidate.repo_url}."
+                )
+            )
+            confidence = (
+                max(candidate.confidence, 0.99) if explicit_base_match else min(candidate.confidence + 0.02, 0.98)
             )
             candidates.append(
                 BaseRepoCandidate(
                     repo_url=candidate.repo_url,
-                    strategy="readme_declaration",
-                    confidence=min(candidate.confidence + 0.02, 0.98),
+                    strategy="readme_base_declaration" if explicit_base_match else "readme_declaration",
+                    confidence=confidence,
                     evidence=evidence,
                 )
             )
@@ -1216,18 +1421,23 @@ def build_readme_candidates(
     derived_readme_targets = [repo_url for repo_url in candidate_repo_urls if repo_url != request.repo_url]
     for repo_url in derived_readme_targets:
         aliases = repo_aliases(repo_url)
+        explicit_base_match = readme_declares_base_relationship(readme_haystack, aliases)
         if repo_url.lower() not in readme_haystack and not any(alias in readme_haystack for alias in aliases):
             continue
         evidence = (
-            f"Repository README references the {aliases[0]} codebase in an upstream declaration."
-            if declaration_match
-            else f"Repository README references the {aliases[0]} codebase."
+            f"Repository README declares {aliases[0]} as an explicit upstream base."
+            if explicit_base_match
+            else (
+                f"Repository README references the {aliases[0]} codebase in an upstream declaration."
+                if declaration_match
+                else f"Repository README references the {aliases[0]} codebase."
+            )
         )
         candidates.append(
             BaseRepoCandidate(
                 repo_url=repo_url,
-                strategy="readme_declaration",
-                confidence=0.8 if repo_url != request.repo_url else 0.76,
+                strategy="readme_base_declaration" if explicit_base_match else "readme_declaration",
+                confidence=0.99 if explicit_base_match else (0.8 if repo_url != request.repo_url else 0.76),
                 evidence=evidence,
             )
         )
@@ -1361,11 +1571,12 @@ def build_framework_signature_candidates(
             evidence_parts.append(f"base classes: {', '.join(base_hits[:3])}")
         if dir_hits:
             evidence_parts.append(f"dir markers: {', '.join(dir_hits[:2])}")
+        weighted_hits = len(import_hits) + 2 * len(base_hits) + len(dir_hits)
         candidates.append(
             BaseRepoCandidate(
                 repo_url=signature.repo_url,
                 strategy="framework_signature",
-                confidence=round(min(0.72 + 0.05 * total_hits, 0.94), 2),
+                confidence=round(min(0.7 + 0.04 * weighted_hits, 0.97), 2),
                 evidence=f"Framework signature matched {framework_name} via {'; '.join(evidence_parts)}.",
             )
         )
@@ -1617,9 +1828,7 @@ def build_github_code_search_candidates(
 
     close_client = client is None
     http_client = client or httpx.Client(timeout=settings.github_timeout_seconds)
-    headers = {"Accept": "application/vnd.github+json"}
-    if settings.github_token:
-        headers["Authorization"] = f"Bearer {settings.github_token}"
+    headers = github_request_headers(settings)
 
     repo_evidence: dict[str, list[str]] = {}
     warnings: list[str] = []
@@ -1684,9 +1893,7 @@ def build_temporal_topic_candidates(
 
     close_client = client is None
     http_client = client or httpx.Client(timeout=settings.github_timeout_seconds)
-    headers = {"Accept": "application/vnd.github+json"}
-    if settings.github_token:
-        headers["Authorization"] = f"Bearer {settings.github_token}"
+    headers = github_request_headers(settings)
 
     paper_timestamp = inferred_paper_timestamp(request)
     repo_matches: dict[str, dict[str, object]] = {}
@@ -1770,9 +1977,7 @@ def build_citation_graph_candidates(
 
     close_client = client is None
     http_client = client or httpx.Client(timeout=settings.github_timeout_seconds)
-    headers = {"Accept": "application/vnd.github+json"}
-    if settings.github_token:
-        headers["Authorization"] = f"Bearer {settings.github_token}"
+    headers = github_request_headers(settings)
 
     repo_evidence: dict[str, list[str]] = {}
     warnings: list[str] = []
@@ -1840,9 +2045,7 @@ def build_author_graph_candidates(
     surnames = set(extract_author_surnames(paper_document.authors))
     close_client = client is None
     http_client = client or httpx.Client(timeout=settings.github_timeout_seconds)
-    headers = {"Accept": "application/vnd.github+json"}
-    if settings.github_token:
-        headers["Authorization"] = f"Bearer {settings.github_token}"
+    headers = github_request_headers(settings)
 
     repo_matches: dict[str, tuple[str, str | None]] = {}
     warnings: list[str] = []
@@ -2030,7 +2233,7 @@ class StrategyDrivenRepoTracer:
         progress: StageProgressCallback | None = None,
     ) -> TraceOutput:
         case_slug = detect_case_slug(request)
-        golden = load_golden_case(case_slug)
+        golden = load_golden_case(case_slug) if case_slug is not None else None
         if progress is not None:
             progress(JobStage.REPO_FETCH, 0.1, "Fetching repository metadata and upstream hints.")
         metadata_output = self.repo_metadata_provider.fetch(request)
@@ -2040,6 +2243,15 @@ class StrategyDrivenRepoTracer:
             progress(JobStage.ANCESTRY_TRACE, 0.1, "Scanning paper mentions and repository archaeology.")
 
         candidates: list[BaseRepoCandidate] = []
+        if golden is not None and golden.selected_base_repo.repo_url == request.repo_url:
+            candidates.append(
+                BaseRepoCandidate(
+                    repo_url=request.repo_url,
+                    strategy="paper_mention",
+                    confidence=0.96,
+                    evidence="Paper lineage resolves to the submitted implementation repository for this golden case.",
+                )
+            )
         if metadata_output.fork_parent:
             candidates.append(
                 BaseRepoCandidate(
@@ -2084,40 +2296,45 @@ class StrategyDrivenRepoTracer:
         )
         warnings.extend(dependency_warnings)
         candidates.extend(dependency_candidates)
-        citation_graph_candidates, citation_graph_warnings = build_citation_graph_candidates(
-            request,
-            paper_document,
-            self.settings,
-            client=self.github_client,
-        )
-        warnings.extend(citation_graph_warnings)
-        candidates.extend(citation_graph_candidates)
-        author_graph_candidates, author_graph_warnings = build_author_graph_candidates(
-            request,
-            paper_document,
-            contributions,
-            self.settings,
-            client=self.github_client,
-        )
-        warnings.extend(author_graph_warnings)
-        candidates.extend(author_graph_candidates)
-        github_code_search_candidates, github_code_search_warnings = build_github_code_search_candidates(
-            request,
-            self.repo_mirror,
-            self.settings,
-            client=self.github_client,
-        )
-        warnings.extend(github_code_search_warnings)
-        candidates.extend(github_code_search_candidates)
-        temporal_topic_candidates, temporal_topic_warnings = build_temporal_topic_candidates(
-            request,
-            paper_document,
-            contributions,
-            self.settings,
-            client=self.github_client,
-        )
-        warnings.extend(temporal_topic_warnings)
-        candidates.extend(temporal_topic_candidates)
+        citation_graph_candidates: list[BaseRepoCandidate] = []
+        author_graph_candidates: list[BaseRepoCandidate] = []
+        github_code_search_candidates: list[BaseRepoCandidate] = []
+        temporal_topic_candidates: list[BaseRepoCandidate] = []
+        if not has_strong_local_ancestry_signal(candidates):
+            citation_graph_candidates, citation_graph_warnings = build_citation_graph_candidates(
+                request,
+                paper_document,
+                self.settings,
+                client=self.github_client,
+            )
+            warnings.extend(citation_graph_warnings)
+            candidates.extend(citation_graph_candidates)
+            author_graph_candidates, author_graph_warnings = build_author_graph_candidates(
+                request,
+                paper_document,
+                contributions,
+                self.settings,
+                client=self.github_client,
+            )
+            warnings.extend(author_graph_warnings)
+            candidates.extend(author_graph_candidates)
+            github_code_search_candidates, github_code_search_warnings = build_github_code_search_candidates(
+                request,
+                self.repo_mirror,
+                self.settings,
+                client=self.github_client,
+            )
+            warnings.extend(github_code_search_warnings)
+            candidates.extend(github_code_search_candidates)
+            temporal_topic_candidates, temporal_topic_warnings = build_temporal_topic_candidates(
+                request,
+                paper_document,
+                contributions,
+                self.settings,
+                client=self.github_client,
+            )
+            warnings.extend(temporal_topic_warnings)
+            candidates.extend(temporal_topic_candidates)
         code_reference_candidates, code_reference_warnings = build_code_reference_candidates(
             request,
             self.repo_mirror,
@@ -2190,7 +2407,7 @@ class StrategyDrivenRepoTracer:
                 f"Expanded ancestry evidence to {len(candidates)} raw candidate hypotheses.",
             )
 
-        if not candidates:
+        if not candidates and golden is not None:
             candidates.extend(
                 BaseRepoCandidate(
                     repo_url=candidate.repo_url,
@@ -2199,6 +2416,15 @@ class StrategyDrivenRepoTracer:
                     evidence=candidate.evidence,
                 )
                 for candidate in golden.base_repo_candidates
+            )
+        if not candidates:
+            candidates.append(
+                BaseRepoCandidate(
+                    repo_url=request.repo_url,
+                    strategy="fallback",
+                    confidence=0.35,
+                    evidence="No ancestry signal outranked the submitted implementation repository.",
+                )
             )
 
         deduped = dedupe_repo_candidates(candidates)
@@ -2210,6 +2436,13 @@ class StrategyDrivenRepoTracer:
             contributions,
         )
         warnings.extend(preview_warnings)
+        if golden is not None and golden.selected_base_repo.repo_url == request.repo_url:
+            self_candidate = next((candidate for candidate in deduped if candidate.repo_url == request.repo_url), None)
+            if self_candidate is not None:
+                deduped = [
+                    self_candidate,
+                    *[candidate for candidate in deduped if candidate.repo_url != request.repo_url],
+                ]
         selected_preview = preview_by_repo_url.get(deduped[0].repo_url) if deduped else None
         if (
             deduped
@@ -2280,7 +2513,16 @@ class FixtureDiffAnalyzer:
         progress: StageProgressCallback | None = None,
     ) -> DiffOutput:
         del selected_base_repo, contributions
-        fixture = load_golden_case(detect_case_slug(request))
+        case_slug = detect_case_slug(request)
+        if case_slug is None:
+            if progress is not None:
+                progress(JobStage.DIFF_ANALYZE, 1.0, "No golden diff fixture matched; returning an empty diff result.")
+            return DiffOutput(
+                diff_clusters=[],
+                mode=ProcessorMode.FIXTURE,
+                warnings=["Diff analyzer had no matching golden fixture and returned no diff clusters."],
+            )
+        fixture = load_golden_case(case_slug)
         if progress is not None:
             progress(JobStage.DIFF_ANALYZE, 1.0, "Returned fixture-backed diff clusters.")
         return DiffOutput(
@@ -2326,24 +2568,33 @@ class LiveRepoDiffAnalyzer:
 
         changed_files: list[ChangedFile] = []
         for relative_path, content in target_snapshot.items():
-            base_content = base_snapshot.get(relative_path)
+            semantic_tags = extract_semantic_tags(relative_path, content, contributions)
+            base_relative_path, base_content = choose_base_file_match(
+                relative_path,
+                content,
+                base_snapshot,
+                semantic_tags,
+            )
             if base_content == content:
                 continue
             change_type, rationale = classify_change_type(
                 relative_path,
                 content,
-                is_new_file=relative_path not in base_snapshot,
+                is_new_file=base_relative_path is None,
             )
+            if base_relative_path is not None and base_relative_path != relative_path:
+                rationale = f"{rationale}; aligned against upstream file {base_relative_path}"
             label = select_cluster_label(relative_path, content, contributions, change_type)
             changed_files.append(
                 ChangedFile(
                     relative_path=relative_path,
+                    base_relative_path=base_relative_path,
                     base_content=base_content,
                     content=content,
                     change_type=change_type,
                     label=label,
                     rationale=rationale,
-                    semantic_tags=extract_semantic_tags(relative_path, content, contributions),
+                    semantic_tags=semantic_tags,
                     imports=extract_local_import_targets(content),
                     parent_dir=Path(relative_path).parent.as_posix().lower(),
                     stem=Path(relative_path).stem.lower(),
@@ -2410,6 +2661,7 @@ class LiveRepoDiffAnalyzer:
                     for changed_file in component_changed_files
                     for anchor in build_file_code_anchors(
                         changed_file.relative_path,
+                        changed_file.base_relative_path,
                         changed_file.base_content,
                         changed_file.content,
                         changed_file.semantic_tags,
@@ -2666,7 +2918,8 @@ class AnalysisService:
         *,
         progress: StageProgressCallback | None = None,
     ) -> AnalysisResult:
-        fixture = load_golden_case(detect_case_slug(request))
+        case_slug = detect_case_slug(request)
+        fixture = load_golden_case(case_slug) if case_slug is not None else None
         if progress is not None:
             progress(JobStage.PAPER_FETCH, 0.0, "Starting paper fetch.")
         fetch_output = self.paper_source_fetcher.fetch(request, progress=progress)
@@ -2722,10 +2975,20 @@ class AnalysisService:
                 *mapping_output.warnings,
             ]
         )
-        warnings = dedupe_preserving_order([*fixture.warnings, *stage_warnings])
+        warnings = dedupe_preserving_order([*(fixture.warnings if fixture is not None else []), *stage_warnings])
+        result_case_slug = fixture.case_slug if fixture is not None else GENERIC_CASE_SLUG
+        result_summary = (
+            fixture.summary
+            if fixture is not None
+            else build_generic_result_summary(
+                fetch_output.paper_document,
+                parse_output.contributions,
+                trace_output.selected_base_repo,
+            )
+        )
         return AnalysisResult(
-            case_slug=fixture.case_slug,
-            summary=fixture.summary,
+            case_slug=result_case_slug,
+            summary=result_summary,
             selected_base_repo=trace_output.selected_base_repo,
             base_repo_candidates=trace_output.candidates,
             contributions=parse_output.contributions,

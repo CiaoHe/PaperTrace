@@ -24,7 +24,7 @@ const STRATEGY_RINGS: StrategyRing[] = [
     label: "Direct signals",
     description: "Fork metadata, README declarations, metadata URLs, and first-commit fossils.",
     hopLabel: "Hop 1",
-    strategies: ["github_fork", "readme_declaration", "metadata_url", "fossil_evidence"],
+    strategies: ["github_fork", "readme_base_declaration", "readme_declaration", "metadata_url", "fossil_evidence"],
   },
   {
     key: "structural",

@@ -278,7 +278,26 @@ class FixturePaperSourceFetcher:
     ) -> FetchOutput:
         if progress is not None:
             progress(JobStage.PAPER_FETCH, 0.3, "Loading fixture paper content.")
-        fixture = load_paper_fixture(detect_case_slug(request))
+        case_slug = detect_case_slug(request)
+        if case_slug is None:
+            paper_document = PaperDocument(
+                source_kind=detect_paper_source_kind(request.paper_source),
+                source_ref=request.paper_source,
+                title=request.paper_source,
+                abstract="",
+                sections=[],
+                text=request.paper_source,
+            )
+            if progress is not None:
+                progress(
+                    JobStage.PAPER_FETCH, 1.0, "No golden fixture matched; returned a generic text paper document."
+                )
+            return FetchOutput(
+                paper_document=paper_document,
+                mode=ProcessorMode.FIXTURE,
+                warnings=["Paper fetcher had no matching golden case and returned a generic text payload."],
+            )
+        fixture = load_paper_fixture(case_slug)
         if progress is not None:
             progress(JobStage.PAPER_FETCH, 1.0, f"Loaded fixture paper content for {fixture.title}.")
         return FetchOutput(

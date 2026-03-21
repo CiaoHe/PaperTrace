@@ -209,6 +209,86 @@ def test_live_repo_diff_analyzer_groups_new_and_modified_files(
     assert any(cluster.label == "Low-rank adaptation modules" for cluster in result.diff_clusters)
 
 
+def test_live_repo_diff_analyzer_matches_upstream_file_by_import_path(tmp_path: Path) -> None:
+    diff_settings = Settings.model_validate(
+        {
+            "LOCAL_DATA_DIR": str(tmp_path / ".local"),
+            "ENABLE_LIVE_REPO_ANALYSIS": True,
+            "REPO_ANALYSIS_EXCLUDE_DIRS": ["docs", ".github"],
+            "REPO_ANALYSIS_EXCLUDE_FILENAMES": ["readme.md", "poetry.lock"],
+            "REPO_ANALYSIS_INCLUDE_DIRS": [],
+            "REPO_MAX_FILE_SIZE_BYTES": 50_000,
+            "REPO_MAX_FILES": 80,
+        }
+    )
+    base_repo = tmp_path / "trl-base"
+    target_repo = tmp_path / "opsd-target"
+    init_git_repo(
+        base_repo,
+        {
+            "trl/trainer/sft_trainer.py": (
+                "class SFTTrainer:\n"
+                "    def train_step(self, batch):\n"
+                "        loss = batch['loss']\n"
+                "        return loss\n"
+            ),
+        },
+    )
+    init_git_repo(
+        target_repo,
+        {
+            "opsd_trainer.py": (
+                "from trl.trainer.sft_trainer import SFTTrainer\n\n"
+                "class OPSDTrainer(SFTTrainer):\n"
+                "    def train_step(self, batch):\n"
+                "        teacher_loss = batch['teacher_loss']\n"
+                "        return super().train_step(batch) + teacher_loss\n"
+            ),
+        },
+    )
+
+    analyzer = LiveRepoDiffAnalyzer(
+        repo_mirror=StaticRepoMirror(
+            {
+                "https://github.com/huggingface/trl": base_repo,
+                "https://github.com/example/opsd-target": target_repo,
+            }
+        ),
+        settings=diff_settings,
+    )
+    result = analyzer.analyze(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2601.18734",
+            repo_url="https://github.com/example/opsd-target",
+        ),
+        BaseRepoCandidate(
+            repo_url="https://github.com/huggingface/trl",
+            strategy="framework_signature",
+            confidence=0.92,
+            evidence="TRL import path matched.",
+        ),
+        [
+            PaperContribution(
+                id="C1",
+                title="On-policy self-distillation trainer",
+                section="Method",
+                keywords=["distillation", "trainer"],
+                impl_hints=["Extend the trainer with privileged-teacher supervision."],
+            )
+        ],
+    )
+
+    assert result.diff_clusters
+    comparable_anchors = [
+        anchor
+        for cluster in result.diff_clusters
+        for anchor in cluster.code_anchors
+        if anchor.original_snippet and anchor.original_snippet != anchor.snippet
+    ]
+    assert comparable_anchors
+    assert comparable_anchors[0].original_file_path == "trl/trainer/sft_trainer.py"
+
+
 def test_live_repo_diff_analyzer_filters_docs_and_lockfiles(
     tmp_path: Path,
     repo_settings: Settings,
@@ -644,7 +724,7 @@ def test_repo_tracer_extracts_readme_github_urls_without_seed_aliases() -> None:
         [],
     )
 
-    assert trace_output.selected_base_repo.strategy == "readme_declaration"
+    assert trace_output.selected_base_repo.strategy == "readme_base_declaration"
     assert trace_output.selected_base_repo.repo_url == "https://github.com/example/upstream-core"
 
 
@@ -975,6 +1055,104 @@ def test_repo_tracer_extracts_dependency_archaeology_candidates(
     assert any(candidate.repo_url == "https://github.com/huggingface/trl" for candidate in dependency_candidates)
     assert any(candidate.repo_url == "https://github.com/huggingface/peft" for candidate in dependency_candidates)
     assert any(candidate.repo_url == "https://github.com/openai/triton" for candidate in dependency_candidates)
+
+
+def test_repo_tracer_prefers_trl_for_opsd_style_repo(tmp_path: Path) -> None:
+    tracer_settings = Settings.model_validate(
+        {
+            "LOCAL_DATA_DIR": str(tmp_path / ".local"),
+            "ENABLE_LIVE_REPO_TRACE": True,
+            "REPO_ANALYSIS_EXCLUDE_DIRS": ["docs", ".github"],
+            "REPO_ANALYSIS_EXCLUDE_FILENAMES": ["readme.md", "poetry.lock"],
+            "REPO_ANALYSIS_INCLUDE_DIRS": [],
+            "REPO_MAX_FILE_SIZE_BYTES": 100_000,
+            "REPO_MAX_FILES": 120,
+            "REPO_LINEAGE_PREVIEW_TOP_K": 4,
+        }
+    )
+    target_repo = tmp_path / "opsd-target"
+    trl_repo = tmp_path / "trl-base"
+    transformers_repo = tmp_path / "transformers-base"
+    init_git_repo(
+        target_repo,
+        {
+            "README.md": ("This repository contains OPSD. The code uses trl's experimental GOLD trainer as a base.\n"),
+            "environment.yml": "dependencies:\n  - transformers==4.57.1\n  - trl==0.26.0\n",
+            "opsd_trainer.py": (
+                "from transformers import AutoTokenizer\n"
+                "from trl.trainer.sft_trainer import SFTTrainer\n\n"
+                "class OPSDTrainer(SFTTrainer):\n"
+                "    def train_step(self, batch):\n"
+                "        teacher_loss = batch['teacher_loss']\n"
+                "        return super().train_step(batch) + teacher_loss\n"
+            ),
+        },
+    )
+    init_git_repo(
+        trl_repo,
+        {
+            "trl/trainer/sft_trainer.py": (
+                "class SFTTrainer:\n"
+                "    def train_step(self, batch):\n"
+                "        loss = batch['loss']\n"
+                "        return loss\n"
+            ),
+        },
+    )
+    init_git_repo(
+        transformers_repo,
+        {
+            "src/transformers/tokenization_utils_base.py": (
+                "class AutoTokenizer:\n"
+                "    @classmethod\n"
+                "    def from_pretrained(cls, model_name):\n"
+                "        return cls()\n"
+            ),
+        },
+    )
+
+    tracer = StrategyDrivenRepoTracer(
+        repo_metadata_provider=EmptyRepoMetadataProvider(),
+        repo_mirror=StaticRepoMirror(
+            {
+                "https://github.com/example/opsd-target": target_repo,
+                "https://github.com/huggingface/trl": trl_repo,
+                "https://github.com/huggingface/transformers": transformers_repo,
+            }
+        ),
+        settings=tracer_settings,
+    )
+    trace_output = tracer.trace(
+        AnalysisRequest(
+            paper_source="https://arxiv.org/abs/2601.18734",
+            repo_url="https://github.com/example/opsd-target",
+        ),
+        PaperDocument(
+            source_kind=PaperSourceKind.ARXIV,
+            source_ref="https://arxiv.org/abs/2601.18734",
+            title="Self-Distilled Reasoner",
+            abstract="Code repo: https://github.com/example/opsd-target.",
+            sections=[],
+            text="We use trl's experimental GOLD trainer as a base and compare against GRPO baselines.",
+        ),
+        [
+            PaperContribution(
+                id="C1",
+                title="On-policy self-distillation trainer",
+                section="Method",
+                keywords=["distillation", "trainer", "grpo"],
+                impl_hints=["Build on top of an existing trainer with privileged-teacher supervision."],
+            )
+        ],
+    )
+
+    assert trace_output.selected_base_repo.repo_url == "https://github.com/huggingface/trl"
+    assert trace_output.selected_base_repo.strategy in {
+        "readme_base_declaration",
+        "readme_declaration",
+        "framework_signature",
+        "dependency_archaeology",
+    }
 
 
 def test_repo_tracer_extracts_fossil_candidates_from_first_commit(

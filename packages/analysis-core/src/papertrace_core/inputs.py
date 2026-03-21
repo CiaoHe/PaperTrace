@@ -42,7 +42,8 @@ def normalize_paper_source(value: str) -> str:
 
 
 def normalize_repo_url(value: str) -> str:
-    parsed = urlparse(value.strip())
+    normalized_value = value.strip().rstrip(").,;:!?]}>\"'")
+    parsed = urlparse(normalized_value)
     if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() != "github.com":
         raise ValueError("Repository URL must be a GitHub http(s) URL")
 
@@ -50,6 +51,6 @@ def normalize_repo_url(value: str) -> str:
     if len(path_parts) < 2:
         raise ValueError("Repository URL must include owner and repository name")
 
-    owner = path_parts[0]
-    repo = path_parts[1].removesuffix(".git")
+    owner = path_parts[0].rstrip(").,;:!?]}>\"'")
+    repo = path_parts[1].removesuffix(".git").rstrip(").,;:!?]}>\"'")
     return f"https://github.com/{owner}/{repo}"

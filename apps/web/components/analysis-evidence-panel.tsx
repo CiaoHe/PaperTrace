@@ -386,7 +386,11 @@ export function AnalysisEvidencePanel({
         <section className="github-diff-pane" data-testid="github-diff-pane">
           <div className="review-pane-head">
             <small>Code review</small>
-            <h4>{selectedFile?.path ?? "No file selected"}</h4>
+            <h4>
+              {selectedAnchor
+                ? `${selectedAnchor.original_file_path ?? "unknown source"} -> ${selectedAnchor.file_path}`
+                : (selectedFile?.path ?? "No file selected")}
+            </h4>
             <p className="muted">
               {selectedFile
                 ? `${sourceRepoUrl} -> ${currentRepoUrl}`
@@ -414,9 +418,13 @@ export function AnalysisEvidencePanel({
                   >
                     <div className="github-diff-head">
                       <div>
-                        <strong>{anchor.file_path}</strong>
+                        <strong>
+                          {anchor.original_file_path ?? "unknown source"}
+                          {" -> "}
+                          {anchor.file_path}
+                        </strong>
                         <p className="muted">
-                          original {formatRange(anchor.original_start_line, anchor.original_end_line)} {"->"} current{" "}
+                          source {formatRange(anchor.original_start_line, anchor.original_end_line)} {"->"} current{" "}
                           {anchor.start_line}-{anchor.end_line}
                         </p>
                       </div>

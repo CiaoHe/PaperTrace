@@ -278,6 +278,7 @@ def _enrich_cluster_code_anchors(
         anchors.extend(
             build_file_code_anchors(
                 file_path,
+                file_path if base_content is not None else None,
                 base_content,
                 target_content,
                 semantic_tags,

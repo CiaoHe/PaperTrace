@@ -49,7 +49,7 @@ function buildClusterPatchDocument(cluster: DiffCluster): { original: string; mo
   const modifiedBlocks: string[] = [];
   for (const [index, anchor] of anchors.entries()) {
     const heading = [
-      `# ${index + 1}. ${anchor.file_path}`,
+      `# ${index + 1}. ${anchor.original_file_path ?? anchor.file_path} -> ${anchor.file_path}`,
       `kind=${anchor.anchor_kind}`,
       `patch=${anchor.patch_id ?? "n/a"}`,
       `range=${anchor.start_line}-${anchor.end_line}`,
@@ -110,7 +110,7 @@ export function AnalysisMonacoDiffViewer({
           <h4>
             {mode === "cluster" && cluster
               ? `${cluster.id} · full cluster patch`
-              : `${anchor?.file_path ?? "unknown"}:${anchor?.start_line ?? 0}-${anchor?.end_line ?? 0}`}
+              : `${anchor?.original_file_path ?? "unknown"} -> ${anchor?.file_path ?? "unknown"}:${anchor?.start_line ?? 0}-${anchor?.end_line ?? 0}`}
           </h4>
         </div>
         <strong>{mode === "cluster" ? `${cluster?.code_anchors?.length ?? 0} anchors` : anchor?.anchor_kind}</strong>
@@ -118,11 +118,11 @@ export function AnalysisMonacoDiffViewer({
       <p className="muted">
         {mode === "cluster" && cluster
           ? "Aggregated patch review surface across all code anchors in the selected cluster."
-          : `original ${
+          : `${anchor?.original_file_path ?? "unknown"}:${
               anchor?.original_start_line && anchor?.original_end_line
                 ? `${anchor.original_start_line}-${anchor.original_end_line}`
                 : "n/a"
-            } -> current ${anchor?.start_line ?? 0}-${anchor?.end_line ?? 0}`}
+            } -> ${anchor?.file_path ?? "unknown"}:${anchor?.start_line ?? 0}-${anchor?.end_line ?? 0}`}
       </p>
       <div className="monaco-frame">
         <DiffEditor

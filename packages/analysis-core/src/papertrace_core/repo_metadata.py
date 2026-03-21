@@ -33,7 +33,15 @@ def repo_aliases(repo_url: str) -> tuple[str, ...]:
 @dataclass(frozen=True)
 class FixtureRepoMetadataProvider:
     def fetch(self, request: AnalysisRequest) -> RepoMetadataOutput:
-        fixture = load_repo_fixture(detect_case_slug(request))
+        case_slug = detect_case_slug(request)
+        if case_slug is None:
+            return RepoMetadataOutput(
+                fork_parent=None,
+                readme_text="",
+                notes="",
+                warnings=["Repo metadata fallback had no matching golden case and returned an empty generic payload."],
+            )
+        fixture = load_repo_fixture(case_slug)
         return RepoMetadataOutput(
             fork_parent=fixture.fork_parent,
             readme_text=fixture.readme,
@@ -53,9 +61,13 @@ class GitHubRepoMetadataProvider:
         readme_endpoint = f"{repo_endpoint}/readme"
         close_client = self.client is None
         client = self.client or httpx.Client(timeout=self.settings.github_timeout_seconds)
-        headers = {"Accept": "application/vnd.github+json"}
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "PaperTrace",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
         if self.settings.github_token:
-            headers["Authorization"] = f"Bearer {self.settings.github_token}"
+            headers["Authorization"] = f"token {self.settings.github_token}"
 
         try:
             repo_response = client.get(repo_endpoint, headers=headers)
@@ -103,6 +115,7 @@ class ChainedRepoMetadataProvider:
                 readme_text=fallback_output.readme_text,
                 notes=fallback_output.notes,
                 warnings=[
+                    *fallback_output.warnings,
                     "Repo tracer fell back to fixture repository metadata.",
                     str(exc),
                 ],
