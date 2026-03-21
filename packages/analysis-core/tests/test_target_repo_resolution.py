@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import httpx
 from _pytest.monkeypatch import MonkeyPatch
 from papertrace_core.models import AnalysisRequest, BaseRepoCandidate, PaperDocument, PaperSourceKind
-from papertrace_core.services import resolve_target_repo_url
+from papertrace_core.services import infer_target_repo_from_project_pages, resolve_target_repo_url
 from papertrace_core.settings import Settings
 
 
@@ -78,6 +79,37 @@ def test_resolve_target_repo_url_prefers_direct_github_mention_over_case_aliases
     assert repo_url == "https://github.com/lasgroup/SDPO"
     assert warnings == [
         "Resolved target repository from GitHub URL mentioned in the paper: https://github.com/lasgroup/SDPO."
+    ]
+
+
+def test_infer_target_repo_from_project_pages_extracts_code_repo_link() -> None:
+    paper_document = build_paper_document(
+        source_ref="https://arxiv.org/abs/2602.02710",
+        title="Maximum Likelihood Reinforcement Learning",
+        text="Project website and code: https://zanette-labs.github.io/MaxRL/",
+    )
+    html = """
+    <html>
+      <body>
+        <a href="https://github.com/tajwarfahim/maxrl">Code</a>
+        <a href="https://github.com/nerfies/nerfies.github.io">Template</a>
+      </body>
+    </html>
+    """
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=html)
+
+    repo_url, warnings = infer_target_repo_from_project_pages(
+        paper_document,
+        Settings(),
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert repo_url == "https://github.com/tajwarfahim/maxrl"
+    assert warnings == [
+        "Resolved target repository from project page https://zanette-labs.github.io/MaxRL/: "
+        "https://github.com/tajwarfahim/maxrl."
     ]
 
 

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlparse
 
 import httpx
 
@@ -115,6 +116,7 @@ DECLARATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\btrl\b", flags=0),
 )
 GITHUB_URL_RE = re.compile(r"https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?")
+HTTP_URL_RE = re.compile(r"https?://[^\s<>()\"']+")
 IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 SYMBOL_RE = re.compile(r"\b(?:class|def)\s+([A-Za-z_][A-Za-z0-9_]*)")
 IMPORT_RE = re.compile(r"\b(?:from|import)\s+([A-Za-z_][A-Za-z0-9_\.]*)")
@@ -1098,6 +1100,107 @@ def infer_target_repo_from_paper_mentions(
     return repo_urls[0] if repo_urls else None
 
 
+def extract_http_urls(text: str) -> list[str]:
+    urls: list[str] = []
+    for matched_url in HTTP_URL_RE.findall(text):
+        normalized = matched_url.rstrip(URL_TRAILING_PUNCTUATION)
+        if normalized not in urls:
+            urls.append(normalized)
+    return urls
+
+
+def project_page_urls(paper_document: PaperDocument) -> list[str]:
+    urls: list[str] = []
+    for candidate_url in extract_http_urls(
+        "\n".join(
+            [
+                paper_document.source_ref,
+                paper_document.text,
+                *[section.text for section in paper_document.sections[:8]],
+            ]
+        )
+    ):
+        parsed = urlparse(candidate_url)
+        if parsed.scheme not in {"http", "https"}:
+            continue
+        host = parsed.netloc.lower()
+        if host in {"github.com", "www.github.com", "arxiv.org", "www.arxiv.org"}:
+            continue
+        if candidate_url.lower().endswith(".pdf"):
+            continue
+        urls.append(candidate_url)
+    return dedupe_preserving_order(urls)
+
+
+def score_project_page_repo_reference(
+    project_url: str,
+    html_text: str,
+    repo_url: str,
+    paper_document: PaperDocument,
+) -> int:
+    lowered_html = html_text.lower()
+    lowered_repo_url = repo_url.lower()
+    index = lowered_html.find(lowered_repo_url)
+    score = 0
+    if index != -1:
+        window = lowered_html[max(index - 160, 0) : index + len(lowered_repo_url) + 160]
+        if any(keyword in window for keyword in ("code", "github", "implementation", "repo", "official")):
+            score += 6
+        if "website" in window:
+            score += 2
+    project_path = urlparse(project_url).path.strip("/").lower()
+    project_tokens = {token for token in re.split(r"[^a-z0-9]+", project_path) if len(token) >= 3}
+    title_tokens = {token for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", paper_document.title.lower())}
+    repo_tokens = {token for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", lowered_repo_url)}
+    score += 2 * len(project_tokens & repo_tokens)
+    score += len(title_tokens & repo_tokens)
+    return score
+
+
+def infer_target_repo_from_project_pages(
+    paper_document: PaperDocument,
+    settings: Settings | None,
+    client: httpx.Client | None = None,
+) -> tuple[str | None, list[str]]:
+    if settings is None:
+        return None, []
+
+    close_client = client is None
+    http_client = client or httpx.Client(timeout=settings.arxiv_timeout_seconds)
+    warnings: list[str] = []
+    try:
+        for project_url in project_page_urls(paper_document)[:3]:
+            try:
+                response = http_client.get(project_url, follow_redirects=True)
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                warnings.append(f"Target repo resolution skipped project page {project_url}: {exc}")
+                continue
+            html_text = response.text[:200_000]
+            repo_candidates = extract_github_repo_urls(html_text)
+            if not repo_candidates:
+                continue
+            scored_candidates = sorted(
+                repo_candidates,
+                key=lambda repo_url: (
+                    score_project_page_repo_reference(project_url, html_text, repo_url, paper_document),
+                    repo_url,
+                ),
+                reverse=True,
+            )
+            best_repo_url = scored_candidates[0]
+            if score_project_page_repo_reference(project_url, html_text, best_repo_url, paper_document) <= 0:
+                continue
+            return (
+                best_repo_url,
+                [f"Resolved target repository from project page {project_url}: {best_repo_url}."],
+            )
+    finally:
+        if close_client:
+            http_client.close()
+    return None, warnings
+
+
 def infer_target_repo_from_llm(
     paper_document: PaperDocument,
     contributions: list[PaperContribution],
@@ -1175,6 +1278,14 @@ def resolve_target_repo_url(
     if paper_repo_url is not None:
         warnings.append(f"Resolved target repository from GitHub URL mentioned in the paper: {paper_repo_url}.")
         return paper_repo_url, warnings
+
+    project_page_repo_url, project_page_warnings = infer_target_repo_from_project_pages(
+        paper_document,
+        settings,
+    )
+    warnings.extend(project_page_warnings)
+    if project_page_repo_url is not None:
+        return project_page_repo_url, warnings
 
     llm_repo_url, llm_warnings = infer_target_repo_from_llm(
         paper_document,
@@ -1496,6 +1607,80 @@ def build_readme_candidates(
             )
 
     return dedupe_repo_candidates(candidates)
+
+
+def explicit_base_repo_candidates(candidates: list[BaseRepoCandidate]) -> list[BaseRepoCandidate]:
+    return [candidate for candidate in candidates if candidate.strategy == "readme_base_declaration"]
+
+
+def should_use_llm_base_repo_selection(
+    candidates: list[BaseRepoCandidate],
+    *,
+    has_fork_parent: bool,
+) -> bool:
+    if has_fork_parent:
+        return False
+    explicit_candidates = explicit_base_repo_candidates(candidates)
+    if len(explicit_candidates) == 1 and explicit_candidates[0].confidence >= 0.98:
+        return False
+    return True
+
+
+def build_repo_context_summary(
+    request: AnalysisRequest,
+    repo_mirror: RepoMirror | None,
+    settings: Settings | None,
+) -> str:
+    if repo_mirror is None or settings is None:
+        return ""
+    try:
+        repo_root = repo_mirror.prepare(request.repo_url)
+        snapshot = load_repo_snapshot(repo_root, settings)
+        supporting_files = load_repo_supporting_files(repo_root)
+    except (RepoAccessError, KeyError):
+        return ""
+
+    top_level_dirs = Counter(
+        Path(relative_path).parts[0] for relative_path in snapshot if len(Path(relative_path).parts) > 1
+    )
+    package_roots = sorted({Path(relative_path).parts[0] for relative_path in snapshot if Path(relative_path).parts})
+    imported_modules = Counter(
+        imported_name.split(".", 1)[0]
+        for content in snapshot.values()
+        for imported_name in extract_import_modules(content)
+        if imported_name
+    )
+    repo_mentions = extract_github_repo_urls(
+        "\n".join(
+            [
+                *supporting_files.values(),
+                *[content for _, content in list(snapshot.items())[:20]],
+            ]
+        )
+    )
+    dependency_names = sorted(parse_dependency_names_from_supporting_files(supporting_files))
+    pyproject_name = ""
+    pyproject_content = supporting_files.get("pyproject.toml")
+    if pyproject_content:
+        try:
+            pyproject_payload = tomllib.loads(pyproject_content)
+        except tomllib.TOMLDecodeError:
+            pyproject_payload = {}
+        project = pyproject_payload.get("project")
+        if isinstance(project, dict):
+            raw_name = project.get("name")
+            if isinstance(raw_name, str):
+                pyproject_name = raw_name
+
+    summary_lines = [
+        f"Top-level dirs: {', '.join(name for name, _ in top_level_dirs.most_common(10)) or 'none'}",
+        f"Package roots: {', '.join(package_roots[:12]) or 'none'}",
+        f"Pyproject name: {pyproject_name or 'unknown'}",
+        f"Dependencies: {', '.join(dependency_names[:16]) or 'none'}",
+        f"Most common imports: {', '.join(name for name, _ in imported_modules.most_common(16)) or 'none'}",
+        f"Referenced repos in code/config: {', '.join(repo_mentions[:10]) or 'none'}",
+    ]
+    return "Current repo structure summary:\n" + "\n".join(f"- {line}" for line in summary_lines)
 
 
 def build_snapshot_path_tokens(snapshot: dict[str, str]) -> set[str]:
@@ -2274,6 +2459,10 @@ class StrategyDrivenRepoTracer:
             progress(JobStage.REPO_FETCH, 0.1, "Fetching repository metadata and upstream hints.")
         metadata_output = self.repo_metadata_provider.fetch(request)
         warnings = list(metadata_output.warnings)
+        repo_context_summary = build_repo_context_summary(request, self.repo_mirror, self.settings)
+        llm_notes = metadata_output.notes
+        if repo_context_summary:
+            llm_notes = f"{metadata_output.notes}\n{repo_context_summary}".strip()
         if progress is not None:
             progress(JobStage.REPO_FETCH, 1.0, "Repository metadata loaded; ancestry tracing is ready.")
             progress(JobStage.ANCESTRY_TRACE, 0.1, "Scanning paper mentions and repository archaeology.")
@@ -2433,7 +2622,7 @@ class StrategyDrivenRepoTracer:
                     request_repo_url=request.repo_url,
                     paper_document=paper_document,
                     readme_text=metadata_output.readme_text,
-                    notes=metadata_output.notes,
+                    notes=llm_notes,
                     existing_candidates=dedupe_repo_candidates(candidates),
                 )
                 candidates.extend(llm_candidates)
@@ -2475,7 +2664,11 @@ class StrategyDrivenRepoTracer:
             contributions,
         )
         warnings.extend(preview_warnings)
-        if self.llm_client is not None and hasattr(self.llm_client, "select_base_repo"):
+        if (
+            self.llm_client is not None
+            and hasattr(self.llm_client, "select_base_repo")
+            and should_use_llm_base_repo_selection(deduped, has_fork_parent=metadata_output.fork_parent is not None)
+        ):
             candidate_pool = [candidate for candidate in deduped if candidate.repo_url != request.repo_url][:8]
             if candidate_pool:
                 try:
@@ -2484,7 +2677,7 @@ class StrategyDrivenRepoTracer:
                         paper_document=paper_document,
                         contributions=contributions,
                         readme_text=metadata_output.readme_text,
-                        notes=metadata_output.notes,
+                        notes=llm_notes,
                         existing_candidates=candidate_pool,
                     )
                 except Exception:

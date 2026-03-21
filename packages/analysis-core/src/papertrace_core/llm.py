@@ -375,6 +375,8 @@ class LLMClient:
             "- Prefer repositories explicitly presented as the paper's code release.\n"
             "- Do not return upstream frameworks, dependencies, or baseline repos unless the paper clearly presents "
             "them as the paper's own implementation repository.\n"
+            "- Do not infer a GitHub repository from a project website or GitHub Pages domain alone.\n"
+            "- If the paper does not explicitly mention a GitHub repository, return [].\n"
             "- If the paper text does not contain enough evidence, return [].\n\n"
             f"Paper title: {paper_document.title}\n"
             f"Paper abstract: {_trim_text(paper_document.abstract or paper_document.text, 2200)}\n"
