@@ -543,6 +543,12 @@ def get_review_status(job_id: str) -> ReviewBuildStatusResponse | ReviewUnavaila
                 refinement_status=ReviewRefinementStatus.DISABLED,
                 detail="Review build has not started.",
             )
+        if record.build_status == ReviewBuildStatus.FAILED.value:
+            return ReviewUnavailableResponse(
+                analysis_status=summary.status,
+                build_error=record.build_error or "Review build failed.",
+                detail="Review build failed and the artifact is unavailable.",
+            )
         detail = ""
         if isinstance(record.manifest_summary_json, dict):
             detail = str(record.manifest_summary_json.get("detail", ""))

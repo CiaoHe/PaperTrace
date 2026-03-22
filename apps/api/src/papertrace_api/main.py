@@ -318,7 +318,7 @@ def get_analysis_review(job_id: str) -> ReviewManifestResponse | JSONResponse:
     review_status = get_review_status(job_id)
     if review_status is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis job not found")
-    if summary.status.value == "failed":
+    if summary.status.value == "failed" or isinstance(review_status, ReviewUnavailableResponse):
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=review_status.model_dump(mode="json"))
 
     ensure_review_session(job_id, paper_source=summary.paper_source, current_repo_url=summary.repo_url)
@@ -329,7 +329,7 @@ def get_analysis_review(job_id: str) -> ReviewManifestResponse | JSONResponse:
     refreshed_status = get_review_status(job_id)
     if refreshed_status is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review status not found")
-    if getattr(getattr(refreshed_status, "build_status", None), "value", None) == "failed":
+    if isinstance(refreshed_status, ReviewUnavailableResponse):
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=refreshed_status.model_dump(mode="json"))
     return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=refreshed_status.model_dump(mode="json"))
 
@@ -366,7 +366,7 @@ def rebuild_analysis_review(job_id: str) -> Response:
     refreshed_status = get_review_status(job_id)
     if refreshed_status is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review status not found")
-    if getattr(getattr(refreshed_status, "build_status", None), "value", None) == "failed":
+    if isinstance(refreshed_status, ReviewUnavailableResponse):
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=refreshed_status.model_dump(mode="json"))
     return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=refreshed_status.model_dump(mode="json"))
 

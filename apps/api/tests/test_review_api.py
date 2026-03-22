@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -34,6 +35,7 @@ from papertrace_core.models import (  # noqa: E402
 from papertrace_core.settings import get_settings  # noqa: E402
 from papertrace_core.storage import (  # noqa: E402
     create_job,
+    get_review_artifact_dir,
     get_review_manifest,
     init_db,
     reset_storage_state,
@@ -135,6 +137,22 @@ def configure_review_env(monkeypatch: pytest.MonkeyPatch, **values: str) -> None
     for key, value in values.items():
         monkeypatch.setenv(key, value)
     get_settings.cache_clear()
+
+
+def seed_succeeded_job(source_root: Path, current_root: Path, paper_source: str) -> str:
+    request = AnalysisRequest(paper_source=paper_source, repo_url=str(current_root))
+    job = create_job(request)
+    update_job_status(
+        job.id,
+        status=JobStatus.SUCCEEDED,
+        stage=JobStage.PERSIST_RESULT,
+        stage_progress=1.0,
+        stage_detail="Analysis result persisted.",
+        summary="ready",
+        result=make_result(str(source_root)),
+        repo_url=str(current_root),
+    )
+    return job.id
 
 
 def test_review_endpoint_builds_and_serves_manifest(tmp_path: Path) -> None:
@@ -474,3 +492,118 @@ def test_review_rebuild_resets_failed_refinement_state(
     assert rebuild_response.json()["build_status"] == "pending"
     assert rebuild_response.json()["refinement_status"] == "queued"
     assert queued == [job.id]
+
+
+def test_review_endpoint_returns_202_when_build_lock_is_held(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    current_root = tmp_path / "current"
+    init_git_repo(source_root, {"src/model.py": "def forward(x):\n    return x + 1\n"})
+    init_git_repo(current_root, {"src/model.py": "def forward(x):\n    return x + 2\n"})
+
+    init_db()
+    job_id = seed_succeeded_job(source_root, current_root, "paper://review-lock")
+
+    @contextmanager
+    def held_lock(*_args: Any, **_kwargs: Any) -> Generator[bool, None, None]:
+        yield False
+
+    monkeypatch.setattr("papertrace_core.diff_review.builder.review_build_lock", held_lock)
+
+    with TestClient(app) as client:
+        response = client.get(f"/api/v1/analyses/{job_id}/review")
+
+    assert response.status_code == 202
+    assert response.json()["build_status"] == "building"
+    assert response.json()["build_phase"] == "file_mapping"
+
+
+def test_review_cache_hit_reuses_existing_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    current_root = tmp_path / "current"
+    init_git_repo(source_root, {"src/model.py": "def forward(x):\n    return x + 1\n"})
+    init_git_repo(current_root, {"src/model.py": "def forward(x):\n    return x + 2\n"})
+
+    init_db()
+    first_job_id = seed_succeeded_job(source_root, current_root, "paper://review-cache-hit")
+    second_job_id = seed_succeeded_job(source_root, current_root, "paper://review-cache-hit")
+
+    with TestClient(app) as client:
+        first_response = client.get(f"/api/v1/analyses/{first_job_id}/review")
+
+    assert first_response.status_code == 200
+    first_cache_key = first_response.json()["review"]["cache_key"]
+
+    monkeypatch.setattr(
+        "papertrace_core.diff_review.builder._build_manifest",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("cache hit should not rebuild manifest")),
+    )
+
+    with TestClient(app) as client:
+        second_response = client.get(f"/api/v1/analyses/{second_job_id}/review")
+
+    assert second_response.status_code == 200
+    assert second_response.json()["review"]["cache_key"] == first_cache_key
+
+
+def test_review_endpoint_returns_409_when_build_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    current_root = tmp_path / "current"
+    init_git_repo(source_root, {"src/model.py": "def forward(x):\n    return x + 1\n"})
+    init_git_repo(current_root, {"src/model.py": "def forward(x):\n    return x + 2\n"})
+
+    init_db()
+    job_id = seed_succeeded_job(source_root, current_root, "paper://review-build-failure")
+
+    monkeypatch.setattr(
+        "papertrace_core.diff_review.builder._build_manifest",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("synthetic build failure")),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/api/v1/analyses/{job_id}/review")
+
+    assert response.status_code == 409
+    assert "synthetic build failure" in response.json()["build_error"]
+
+
+def test_review_endpoint_reenqueues_when_ready_manifest_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    current_root = tmp_path / "current"
+    init_git_repo(source_root, {"src/model.py": "def forward(x):\n    return x + 1\n"})
+    init_git_repo(current_root, {"src/model.py": "def forward(x):\n    return x + 2\n"})
+
+    init_db()
+    job_id = seed_succeeded_job(source_root, current_root, "paper://review-stale-manifest")
+
+    with TestClient(app) as client:
+        first_response = client.get(f"/api/v1/analyses/{job_id}/review")
+
+    assert first_response.status_code == 200
+    artifact_dir = get_review_artifact_dir(job_id)
+    assert artifact_dir is not None
+    (artifact_dir / "manifest.json").unlink()
+
+    queued: list[str] = []
+    monkeypatch.setattr(
+        "papertrace_worker.tasks.build_review_artifact.delay",
+        lambda queued_job_id: queued.append(queued_job_id),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/api/v1/analyses/{job_id}/review")
+
+    assert response.status_code == 202
+    assert response.json()["build_status"] == "pending"
+    assert queued == [job_id]

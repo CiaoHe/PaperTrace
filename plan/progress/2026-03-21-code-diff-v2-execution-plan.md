@@ -618,7 +618,7 @@
   - rebuild resets refinement state
 - Status:
   - [x] review session table, Redis lock, atomic artifact swap, and `/review` endpoints implemented
-  - [ ] remaining hardening coverage still needed for concurrency, cache-hit reuse, and rebuild/refinement edge cases
+  - [x] hardening coverage now includes lock-contention `202` behavior, cache-hit reuse, stale-manifest re-enqueue, build-failure `409`, and rebuild/refinement edge cases
 
 ### Phase 3: Review File Payload And Large-File Fallback
 
