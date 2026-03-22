@@ -7,6 +7,14 @@ import type {
   JobStatusResponse,
   JobsResponse,
   ResultResponse,
+  ReviewBuildPendingResponse,
+  ReviewBuildStatusResponse,
+  ReviewFilePayload,
+  ReviewFileResponse,
+  ReviewManifest,
+  ReviewManifestReadyResponse,
+  ReviewUnavailableApiResponse,
+  ReviewUnavailableResponse,
 } from "@papertrace/contracts";
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
@@ -18,6 +26,11 @@ export interface CreateAnalysisUploadPayload {
   paperSource?: string;
   forceReanalysis?: boolean;
 }
+
+export type AnalysisReviewState =
+  | { kind: "ready"; review: ReviewManifest }
+  | { kind: "building"; status: ReviewBuildStatusResponse }
+  | { kind: "unavailable"; status: ReviewUnavailableResponse };
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -77,6 +90,55 @@ export async function getAnalysisResult(jobId: string): Promise<AnalysisResult> 
   });
   const body = await parseResponse<ResultResponse>(response);
   return body.result;
+}
+
+export async function getAnalysisReview(jobId: string): Promise<AnalysisReviewState> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/analyses/${jobId}/review`, {
+    cache: "no-store",
+  });
+
+  if (response.status === 200) {
+    const body = await parseResponse<ReviewManifestReadyResponse>(response);
+    return { kind: "ready", review: body.review };
+  }
+  if (response.status === 202) {
+    const body = await parseResponse<ReviewBuildPendingResponse>(response);
+    return { kind: "building", status: body };
+  }
+  if (response.status === 409) {
+    const body = await parseResponse<ReviewUnavailableApiResponse>(response);
+    return { kind: "unavailable", status: body };
+  }
+
+  const body = await response.text();
+  throw new Error(body || `Review request failed with status ${response.status}`);
+}
+
+export async function rebuildAnalysisReview(jobId: string): Promise<ReviewBuildStatusResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/analyses/${jobId}/review/rebuild`, {
+    method: "POST",
+    cache: "no-store",
+  });
+  if (response.status === 409) {
+    const body = await parseResponse<ReviewUnavailableApiResponse>(response);
+    throw new Error(body.detail || body.build_error);
+  }
+  return await parseResponse<ReviewBuildStatusResponse>(response);
+}
+
+export async function getAnalysisReviewFile(jobId: string, fileId: string): Promise<ReviewFilePayload> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/analyses/${jobId}/review/files/${fileId}`, {
+    cache: "no-store",
+  });
+  const body = await parseResponse<ReviewFileResponse>(response);
+  return body.file;
+}
+
+export function resolveApiUrl(path: string): string {
+  if (path.startsWith("http://") || path.startsWith("https://")) {
+    return path;
+  }
+  return `${API_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 export async function getExamples(): Promise<GoldenCaseExample[]> {

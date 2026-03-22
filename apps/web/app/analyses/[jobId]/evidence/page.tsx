@@ -1,7 +1,8 @@
 import Link from "next/link";
 
-import { AnalysisEvidenceWorkspace } from "@/components/analysis-evidence-workspace";
-import { getAnalysis, getAnalysisResult } from "@/lib/api";
+import { AnalysisReviewStatusCard } from "@/components/analysis-review-status-card";
+import { AnalysisReviewWorkspace } from "@/components/analysis-review-workspace";
+import { getAnalysis, getAnalysisReview } from "@/lib/api";
 
 interface EvidencePageProps {
   params: {
@@ -11,11 +12,15 @@ interface EvidencePageProps {
 
 export default async function EvidencePage({ params }: EvidencePageProps) {
   try {
-    const [job, result] = await Promise.all([getAnalysis(params.jobId), getAnalysisResult(params.jobId)]);
+    const [job, reviewState] = await Promise.all([getAnalysis(params.jobId), getAnalysisReview(params.jobId)]);
 
     return (
       <main className="shell shell-wide evidence-shell">
-        <AnalysisEvidenceWorkspace jobId={params.jobId} result={result} submittedRepoUrl={job.repo_url} />
+        {reviewState.kind === "ready" ? (
+          <AnalysisReviewWorkspace jobId={params.jobId} review={reviewState.review} />
+        ) : (
+          <AnalysisReviewStatusCard job={job} reviewState={reviewState} />
+        )}
       </main>
     );
   } catch (error) {

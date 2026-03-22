@@ -6,20 +6,26 @@ from json import JSONDecodeError
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
 from papertrace_core.cases import example_payloads
 from papertrace_core.inputs import normalize_paper_source, normalize_repo_url
 from papertrace_core.models import AnalysisRequest, HealthResponse, PaperSourceKind
 from papertrace_core.settings import get_settings
 from papertrace_core.storage import (
     create_job,
+    ensure_review_session,
     find_reusable_job_by_paper_source,
     get_engine,
     get_job_result,
     get_job_summary,
+    get_review_file_payload,
+    get_review_manifest,
+    get_review_rendered_html,
+    get_review_status,
     init_db,
     list_jobs,
 )
-from papertrace_worker.tasks import enqueue_analysis
+from papertrace_worker.tasks import build_review_artifact, enqueue_analysis
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
@@ -31,6 +37,10 @@ from papertrace_api.schemas import (
     JobsResponse,
     LegacyCreateAnalysisRequest,
     ResultResponse,
+    ReviewBuildStatusResponse,
+    ReviewFileResponse,
+    ReviewManifestResponse,
+    ReviewUnavailableResponse,
 )
 from papertrace_api.uploads import persist_uploaded_pdf
 
@@ -50,6 +60,7 @@ app.add_middleware(
         "http://127.0.0.1:3100",
         "http://localhost:3100",
     ],
+    allow_origin_regex=r"^https?://(127\.0\.0\.1|localhost)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -282,3 +293,84 @@ def get_analysis_result(job_id: str) -> ResultResponse:
             detail="Analysis result not available",
         )
     return ResultResponse(result=result)
+
+
+@app.get(
+    "/api/v1/analyses/{job_id}/review",
+    response_model=None,
+    responses={
+        200: {"model": ReviewManifestResponse},
+        202: {"model": ReviewBuildStatusResponse},
+        409: {"model": ReviewUnavailableResponse},
+    },
+)
+def get_analysis_review(job_id: str) -> ReviewManifestResponse | JSONResponse:
+    summary = get_job_summary(job_id)
+    if summary is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis job not found")
+
+    manifest = get_review_manifest(job_id)
+    if manifest is not None:
+        return ReviewManifestResponse(review=manifest)
+
+    review_status = get_review_status(job_id)
+    if review_status is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis job not found")
+    if summary.status.value == "failed":
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=review_status.model_dump(mode="json"))
+
+    ensure_review_session(job_id, paper_source=summary.paper_source, current_repo_url=summary.repo_url)
+    build_review_artifact.delay(job_id)
+    manifest = get_review_manifest(job_id)
+    if manifest is not None:
+        return ReviewManifestResponse(review=manifest)
+    refreshed_status = get_review_status(job_id)
+    if refreshed_status is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review status not found")
+    if getattr(getattr(refreshed_status, "build_status", None), "value", None) == "failed":
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=refreshed_status.model_dump(mode="json"))
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=refreshed_status.model_dump(mode="json"))
+
+
+@app.post(
+    "/api/v1/analyses/{job_id}/review/rebuild",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=None,
+    responses={
+        202: {"model": ReviewBuildStatusResponse},
+        409: {"model": ReviewUnavailableResponse},
+    },
+)
+def rebuild_analysis_review(job_id: str) -> Response:
+    summary = get_job_summary(job_id)
+    if summary is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis job not found")
+    if summary.status.value == "failed":
+        status_body = get_review_status(job_id)
+        if status_body is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review status not found")
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=status_body.model_dump(mode="json"))
+    ensure_review_session(job_id, paper_source=summary.paper_source, current_repo_url=summary.repo_url)
+    build_review_artifact.delay(job_id)
+    refreshed_status = get_review_status(job_id)
+    if refreshed_status is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review status not found")
+    if getattr(getattr(refreshed_status, "build_status", None), "value", None) == "failed":
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=refreshed_status.model_dump(mode="json"))
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=refreshed_status.model_dump(mode="json"))
+
+
+@app.get("/api/v1/analyses/{job_id}/review/files/{file_id}", response_model=ReviewFileResponse)
+def get_analysis_review_file(job_id: str, file_id: str) -> ReviewFileResponse:
+    payload = get_review_file_payload(job_id, file_id)
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review file not available")
+    return ReviewFileResponse(file=payload)
+
+
+@app.get("/api/v1/analyses/{job_id}/review/files/{file_id}/rendered", response_class=HTMLResponse)
+def get_analysis_review_file_rendered(job_id: str, file_id: str) -> HTMLResponse:
+    html = get_review_rendered_html(job_id, file_id)
+    if html is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rendered review file not available")
+    return HTMLResponse(content=html)

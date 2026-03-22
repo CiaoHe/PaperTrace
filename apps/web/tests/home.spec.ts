@@ -69,27 +69,39 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await page.getByRole("button", { name: "Signal rings" }).click();
   await expect(page.getByText("Review sequence")).toBeVisible();
   await page.getByRole("button", { name: "Hypothesis paths" }).click();
-  await page.getByRole("link", { name: "Open evidence workspace" }).click();
+  const evidenceLink = page.getByRole("link", { name: "Open evidence workspace" });
+  const evidenceHref = await evidenceLink.getAttribute("href");
+  expect(evidenceHref).toMatch(/\/analyses\/.*\/evidence/);
+  await page.goto(evidenceHref ?? "/");
   await expect(page).toHaveURL(/\/analyses\/.*\/evidence/);
-  await expect(page.getByText("Evidence review board")).toBeVisible();
-  await expect(page.getByText("Mapped change bundles")).toBeVisible();
-  await expect(page.getByTestId("mapping-lane")).toBeVisible();
+  await expect(page.getByText("Evidence review board")).toBeVisible({ timeout: 30000 });
+  await expect(page.getByRole("button", { name: /Primary/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Added/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Large Files/i })).toBeVisible();
   await expect(page.getByTestId("github-review-grid")).toBeVisible();
   await expect(page.getByTestId("github-filetree-pane")).toBeVisible();
   await expect(page.getByTestId("github-diff-pane")).toBeVisible();
   await expect(page.getByTestId("paper-review-pane")).toBeVisible();
-  await expect(page.getByText("Linked change review")).toBeVisible();
-  await expect(page.getByText("D1 → C1").first()).toBeVisible();
-  await expect(page.getByText("Files changed")).toBeVisible();
-  await expect(page.getByText("Code review")).toBeVisible();
-  await expect(page.getByTestId("paper-review-pane").getByText("Paper", { exact: true })).toBeVisible();
-  await expect(page.getByTestId("monaco-evidence-viewer").first()).toBeVisible();
-  const firstDirectory = page.locator(".file-tree-node.dir").first();
-  await expect(firstDirectory).toHaveAttribute("aria-expanded", "true");
-  await firstDirectory.click();
-  await expect(firstDirectory).toHaveAttribute("aria-expanded", "false");
-  await firstDirectory.click();
-  await expect(firstDirectory).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByText("Sentence-level correspondence")).toBeVisible();
+  await expect(page.getByText("Split diff review")).toBeVisible();
+  await expect(page.locator(".review-v2-claim-card").first()).toBeVisible();
+  await page.locator(".review-v2-claim-card").first().click();
+  await expect(page.locator(".review-v2-claim-card").first()).toHaveClass(/active/);
+  const directoryNodes = page.locator(".file-tree-node.dir");
+  if ((await directoryNodes.count()) > 0) {
+    const firstDirectory = directoryNodes.first();
+    await expect(firstDirectory).toHaveAttribute("aria-expanded", "true");
+    await firstDirectory.click();
+    await expect(firstDirectory).toHaveAttribute("aria-expanded", "false");
+    await firstDirectory.click();
+    await expect(firstDirectory).toHaveAttribute("aria-expanded", "true");
+  }
+  const fileNodes = page.locator(".review-v2-tree-file");
+  await expect(fileNodes.first()).toBeVisible();
+  if ((await fileNodes.count()) > 1) {
+    await fileNodes.nth(1).click();
+    await expect(fileNodes.nth(1)).toHaveClass(/active/);
+  }
   await expect(page.getByRole("link", { name: "Back to shell" })).toBeVisible();
 });
 

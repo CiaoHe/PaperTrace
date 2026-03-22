@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     )
     local_cache_dir: Path = Field(default=Path(".cache"), alias="LOCAL_CACHE_DIR")
     local_data_dir: Path = Field(default=Path(".local"), alias="LOCAL_DATA_DIR")
+    review_artifact_base_dir: Path | None = Field(default=None, alias="REVIEW_ARTIFACT_BASE_DIR")
     enable_live_by_default: bool = Field(default=False, alias="ENABLE_LIVE_BY_DEFAULT")
     enable_live_paper_fetch: bool = Field(default=False, alias="ENABLE_LIVE_PAPER_FETCH")
     arxiv_api_base_url: str = Field(default="https://export.arxiv.org", alias="ARXIV_API_BASE_URL")
@@ -105,6 +106,21 @@ class Settings(BaseSettings):
     llm_paper_parse_section_chars: int = Field(default=3500, alias="LLM_PAPER_PARSE_SECTION_CHARS")
     llm_paper_parse_total_chars: int = Field(default=14000, alias="LLM_PAPER_PARSE_TOTAL_CHARS")
     llm_paper_parse_max_batches: int = Field(default=3, alias="LLM_PAPER_PARSE_MAX_BATCHES")
+    review_context_lines: int = Field(default=3, alias="REVIEW_CONTEXT_LINES")
+    review_semantic_gate_enabled: bool = Field(default=True, alias="REVIEW_SEMANTIC_GATE_ENABLED")
+    review_semantic_gate_timeout_seconds: float = Field(default=5.0, alias="REVIEW_SEMANTIC_GATE_TIMEOUT_SECONDS")
+    review_node_binary: str = Field(default="node", alias="REVIEW_NODE_BINARY")
+    review_fallback_render_timeout_seconds: float = Field(
+        default=15.0,
+        alias="REVIEW_FALLBACK_RENDER_TIMEOUT_SECONDS",
+    )
+    review_large_file_line_threshold: int = Field(default=5000, alias="REVIEW_LARGE_FILE_LINE_THRESHOLD")
+    review_large_file_diff_bytes_threshold: int = Field(
+        default=524_288,
+        alias="REVIEW_LARGE_FILE_DIFF_BYTES_THRESHOLD",
+    )
+    review_ambiguous_match_margin: float = Field(default=0.08, alias="REVIEW_AMBIGUOUS_MATCH_MARGIN")
+    review_primary_languages: tuple[str, ...] = Field(default=("python",), alias="REVIEW_PRIMARY_LANGUAGES")
 
     def use_live_paper_fetch(self) -> bool:
         return self.enable_live_paper_fetch or self.enable_live_by_default
@@ -114,6 +130,19 @@ class Settings(BaseSettings):
 
     def use_live_repo_analysis(self) -> bool:
         return self.enable_live_repo_analysis or self.enable_live_by_default
+
+    @property
+    def resolved_review_artifact_base_dir(self) -> Path:
+        root = self.review_artifact_base_dir or (self.local_data_dir / "review-cache")
+        return root.expanduser().resolve()
+
+    @property
+    def resolved_project_root(self) -> Path:
+        return Path(__file__).resolve().parents[4]
+
+    @property
+    def resolved_review_diff2html_helper_path(self) -> Path:
+        return self.resolved_project_root / "infra" / "scripts" / "render_diff2html.mjs"
 
 
 @lru_cache(maxsize=1)

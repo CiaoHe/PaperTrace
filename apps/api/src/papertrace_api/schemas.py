@@ -3,6 +3,12 @@ from __future__ import annotations
 from json import loads
 from typing import Annotated, Literal
 
+from papertrace_core.diff_review.models import (
+    ReviewBuildStatusResponse,
+    ReviewFilePayload,
+    ReviewManifest,
+    ReviewUnavailableResponse,
+)
 from papertrace_core.models import (
     AnalysisResult,
     GoldenCaseExample,
@@ -90,6 +96,14 @@ class ResultResponse(BaseModel):
     result: AnalysisResult
 
 
+class ReviewManifestResponse(BaseModel):
+    review: ReviewManifest
+
+
+class ReviewFileResponse(BaseModel):
+    file: ReviewFilePayload
+
+
 class ExamplesResponse(BaseModel):
     examples: list[GoldenCaseExample]
 
@@ -99,6 +113,10 @@ __all__ = [
     "CreateAnalysisResponse",
     "ExamplesResponse",
     "ResultResponse",
+    "ReviewBuildStatusResponse",
+    "ReviewFileResponse",
+    "ReviewManifestResponse",
+    "ReviewUnavailableResponse",
     "HealthResponse",
     "JobsResponse",
 ]

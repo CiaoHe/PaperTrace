@@ -1024,3 +1024,298 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+.review-v2-shell {
+  display: grid;
+  gap: 20px;
+}
+
+.review-v2-bucket-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.review-v2-bucket-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid #d0d7de;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #24292f;
+  cursor: pointer;
+  font: inherit;
+}
+
+.review-v2-bucket-tab strong {
+  display: inline-flex;
+  min-width: 24px;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f6f8fa;
+  font-size: 12px;
+}
+
+.review-v2-bucket-tab.active {
+  border-color: #0969da;
+  box-shadow: inset 0 0 0 1px #0969da;
+}
+
+.review-v2-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 300px) minmax(0, 1fr) minmax(320px, 360px);
+  gap: 16px;
+  align-items: start;
+}
+
+.review-v2-pane {
+  min-height: 760px;
+  border: 1px solid #d0d7de;
+  border-radius: 12px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.review-v2-pane-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #d8dee4;
+  background: linear-gradient(180deg, #ffffff 0%, #f6f8fa 100%);
+}
+
+.review-v2-pane-head h3 {
+  margin: 4px 0 0;
+  font-size: 18px;
+}
+
+.review-v2-pane-head small {
+  display: block;
+  color: #57606a;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+}
+
+.review-v2-pane-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.review-v2-pane-meta span,
+.review-v2-diff-toolbar span,
+.review-v2-claim-meta span,
+.review-v2-status {
+  padding: 4px 8px;
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #57606a;
+  font-size: 12px;
+}
+
+.review-v2-file-tree {
+  padding: 14px;
+}
+
+.review-v2-tree-group {
+  margin-bottom: 4px;
+}
+
+.review-v2-tree-children {
+  margin-left: 12px;
+  padding-left: 10px;
+  border-left: 1px solid #d8dee4;
+}
+
+.review-v2-tree-node {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #24292f;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.review-v2-tree-node:hover {
+  background: #f6f8fa;
+}
+
+.review-v2-tree-file.active,
+.review-v2-claim-card.active {
+  background: #ddf4ff;
+  box-shadow: inset 0 0 0 1px #54aeff;
+}
+
+.review-v2-tree-node strong {
+  color: #57606a;
+  font-size: 12px;
+}
+
+.review-v2-main-pane {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.review-v2-diff-shell {
+  display: grid;
+  min-height: 100%;
+}
+
+.review-v2-diff-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 18px;
+  border-bottom: 1px solid #d8dee4;
+  background: #f6f8fa;
+}
+
+.review-v2-diff-view {
+  overflow: auto;
+  padding: 0 0 16px;
+}
+
+.review-v2-diff-view .diff {
+  margin: 0;
+}
+
+.review-v2-diff-view .diff-gutter,
+.review-v2-diff-view .diff-code {
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.review-v2-rendered-frame {
+  width: 100%;
+  height: 720px;
+  border: 0;
+  background: #ffffff;
+}
+
+.review-v2-empty-pane,
+.review-v2-explicit-empty {
+  display: grid;
+  place-items: center;
+  min-height: 220px;
+  padding: 24px;
+  color: #57606a;
+  text-align: center;
+}
+
+.review-v2-selected-claim {
+  padding: 16px 18px;
+  border-top: 1px solid #d8dee4;
+  background: #f6f8fa;
+}
+
+.review-v2-selected-claim strong {
+  display: inline-block;
+  margin-bottom: 6px;
+}
+
+.review-v2-claims-pane {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.review-v2-claim-summary {
+  padding: 16px 18px;
+  border-bottom: 1px solid #d8dee4;
+  background: #f6f8fa;
+}
+
+.review-v2-claim-summary p {
+  margin: 0 0 8px;
+}
+
+.review-v2-claim-summary p:last-child {
+  margin-bottom: 0;
+}
+
+.review-v2-claim-list {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  align-content: start;
+  overflow: auto;
+}
+
+.review-v2-claim-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #d0d7de;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #24292f;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.review-v2-claim-card.linked {
+  border-color: #54aeff;
+}
+
+.review-v2-claim-head,
+.review-v2-claim-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.review-v2-status-mapped {
+  color: #1a7f37;
+}
+
+.review-v2-status-partially_mapped,
+.review-v2-status-refining {
+  color: #9a6700;
+}
+
+.review-v2-status-unmapped,
+.review-v2-status-skipped_non_primary_language {
+  color: #cf222e;
+}
+
+@media (max-width: 1280px) {
+  .review-v2-grid {
+    grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+  }
+
+  .review-v2-claims-pane {
+    grid-column: 1 / -1;
+    min-height: 420px;
+  }
+}
+
+@media (max-width: 900px) {
+  .review-v2-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .review-v2-pane {
+    min-height: auto;
+  }
+
+  .review-v2-rendered-frame {
+    height: 560px;
+  }
+}

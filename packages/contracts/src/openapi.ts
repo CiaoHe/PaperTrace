@@ -91,6 +91,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analyses/{job_id}/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Analysis Review */
+        get: operations["get_analysis_review_api_v1_analyses__job_id__review_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analyses/{job_id}/review/rebuild": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rebuild Analysis Review */
+        post: operations["rebuild_analysis_review_api_v1_analyses__job_id__review_rebuild_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analyses/{job_id}/review/files/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Analysis Review File */
+        get: operations["get_analysis_review_file_api_v1_analyses__job_id__review_files__file_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/analyses/{job_id}/review/files/{file_id}/rendered": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Analysis Review File Rendered */
+        get: operations["get_analysis_review_file_rendered_api_v1_analyses__job_id__review_files__file_id__rendered_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -372,6 +440,300 @@ export interface components {
         ResultResponse: {
             result: components["schemas"]["AnalysisResult"];
         };
+        /** ReviewBucket */
+        ReviewBucket: {
+            /** Label */
+            label: string;
+            /** Count */
+            count: number;
+            /** Files */
+            files: components["schemas"]["ReviewFileEntry"][];
+        };
+        /**
+         * ReviewBucketKind
+         * @enum {string}
+         */
+        ReviewBucketKind: "primary" | "added" | "deleted" | "ambiguous" | "low_confidence" | "other_languages" | "large_files";
+        /**
+         * ReviewBuildPhase
+         * @enum {string}
+         */
+        ReviewBuildPhase: "waiting_for_analysis" | "file_mapping" | "diff_generation" | "fallback_render" | "claim_extraction" | "deterministic_linking" | "persisting" | "done";
+        /**
+         * ReviewBuildStatus
+         * @enum {string}
+         */
+        ReviewBuildStatus: "pending" | "building" | "ready" | "failed";
+        /** ReviewBuildStatusResponse */
+        ReviewBuildStatusResponse: {
+            analysis_status: components["schemas"]["JobStatus"];
+            build_status: components["schemas"]["ReviewBuildStatus"];
+            build_phase: components["schemas"]["ReviewBuildPhase"];
+            /**
+             * Build Progress
+             * @default 0
+             */
+            build_progress: number;
+            /**
+             * Files Total
+             * @default 0
+             */
+            files_total: number;
+            /**
+             * Files Done
+             * @default 0
+             */
+            files_done: number;
+            /** Current File */
+            current_file?: string | null;
+            refinement_status: components["schemas"]["ReviewRefinementStatus"];
+            /** Detail */
+            detail: string;
+        };
+        /** ReviewClaimIndexEntry */
+        ReviewClaimIndexEntry: {
+            /** Claim Id */
+            claim_id: string;
+            /** Claim Label */
+            claim_label: string;
+            /** Contribution Key */
+            contribution_key: string;
+            /** Contribution Id */
+            contribution_id: string;
+            /** Section */
+            section: string;
+            /** Claim Text */
+            claim_text: string;
+            status: components["schemas"]["ReviewContributionStatus"];
+        };
+        /**
+         * ReviewContributionStatus
+         * @enum {string}
+         */
+        ReviewContributionStatus: "mapped" | "partially_mapped" | "unmapped" | "refining" | "skipped_non_primary_language";
+        /** ReviewContributionStatusEntry */
+        ReviewContributionStatusEntry: {
+            /** Contribution Id */
+            contribution_id: string;
+            /** Contribution Key */
+            contribution_key: string;
+            status: components["schemas"]["ReviewContributionStatus"];
+        };
+        /**
+         * ReviewDiffType
+         * @enum {string}
+         */
+        ReviewDiffType: "modified" | "added" | "deleted";
+        /**
+         * ReviewFallbackMode
+         * @enum {string}
+         */
+        ReviewFallbackMode: "none" | "diff2html_prebuilt" | "raw_diff_only";
+        /** ReviewFileEntry */
+        ReviewFileEntry: {
+            /** File Id */
+            file_id: string;
+            /** Source Path */
+            source_path?: string | null;
+            /** Current Path */
+            current_path?: string | null;
+            diff_type: components["schemas"]["ReviewDiffType"];
+            match_type: components["schemas"]["ReviewMatchType"];
+            semantic_status: components["schemas"]["ReviewSemanticStatus"];
+            /** Language */
+            language: string;
+            bucket: components["schemas"]["ReviewBucketKind"];
+            /** Significance */
+            significance: string;
+            /**
+             * Linked Claim Count
+             * @default 0
+             */
+            linked_claim_count: number;
+            /** Linked Claim Ids */
+            linked_claim_ids?: string[];
+            /** Linked Contribution Keys */
+            linked_contribution_keys?: string[];
+            stats?: components["schemas"]["ReviewStats"];
+        };
+        /** ReviewFilePayload */
+        ReviewFilePayload: {
+            /** File Id */
+            file_id: string;
+            /** Source Path */
+            source_path?: string | null;
+            /** Current Path */
+            current_path?: string | null;
+            diff_type: components["schemas"]["ReviewDiffType"];
+            match_type: components["schemas"]["ReviewMatchType"];
+            semantic_status: components["schemas"]["ReviewSemanticStatus"];
+            stats: components["schemas"]["ReviewStats"];
+            /** Raw Unified Diff */
+            raw_unified_diff: string;
+            /** Hunks */
+            hunks: components["schemas"]["ReviewHunk"][];
+            /** Linked Claim Ids */
+            linked_claim_ids?: string[];
+            /** Linked Cluster Ids */
+            linked_cluster_ids?: string[];
+            /** @default none */
+            fallback_mode: components["schemas"]["ReviewFallbackMode"];
+            /** Fallback Html Path */
+            fallback_html_path?: string | null;
+        };
+        /** ReviewFileResponse */
+        ReviewFileResponse: {
+            file: components["schemas"]["ReviewFilePayload"];
+        };
+        /** ReviewFileTreeNode */
+        ReviewFileTreeNode: {
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /** Is File */
+            is_file: boolean;
+            /** File Id */
+            file_id?: string | null;
+            /**
+             * Changed Count
+             * @default 0
+             */
+            changed_count: number;
+            /** Children */
+            children?: components["schemas"]["ReviewFileTreeNode"][];
+        };
+        /** ReviewHunk */
+        ReviewHunk: {
+            /** Hunk Id */
+            hunk_id: string;
+            /** Old Start */
+            old_start: number;
+            /** Old Length */
+            old_length: number;
+            /** New Start */
+            new_start: number;
+            /** New Length */
+            new_length: number;
+            /**
+             * Added Count
+             * @default 0
+             */
+            added_count: number;
+            /**
+             * Removed Count
+             * @default 0
+             */
+            removed_count: number;
+            /** Semantic Kind */
+            semantic_kind?: string | null;
+            /** Linked Claim Ids */
+            linked_claim_ids?: string[];
+            /** Linked Contribution Keys */
+            linked_contribution_keys?: string[];
+        };
+        /** ReviewManifest */
+        ReviewManifest: {
+            /** Source Repo */
+            source_repo: string;
+            /** Current Repo */
+            current_repo: string;
+            /** Source Revision */
+            source_revision: string;
+            /** Current Revision */
+            current_revision: string;
+            /** File Tree */
+            file_tree: components["schemas"]["ReviewFileTreeNode"][];
+            /** Review Queue */
+            review_queue: components["schemas"]["ReviewFileEntry"][];
+            /** Secondary Buckets */
+            secondary_buckets: {
+                [key: string]: components["schemas"]["ReviewBucket"];
+            };
+            /** Claim Index */
+            claim_index: components["schemas"]["ReviewClaimIndexEntry"][];
+            /** Contribution Status */
+            contribution_status: components["schemas"]["ReviewContributionStatusEntry"][];
+            summary_counts: components["schemas"]["ReviewSummaryCounts"];
+            /** Artifact Version */
+            artifact_version: string;
+            /** Cache Key */
+            cache_key: string;
+            refinement_status: components["schemas"]["ReviewRefinementStatus"];
+        };
+        /** ReviewManifestResponse */
+        ReviewManifestResponse: {
+            review: components["schemas"]["ReviewManifest"];
+        };
+        /**
+         * ReviewMatchType
+         * @enum {string}
+         */
+        ReviewMatchType: "exact_path" | "content_moved" | "added" | "deleted" | "ambiguous" | "low_confidence";
+        /**
+         * ReviewRefinementStatus
+         * @enum {string}
+         */
+        ReviewRefinementStatus: "disabled" | "queued" | "running" | "ready" | "failed";
+        /**
+         * ReviewSemanticStatus
+         * @enum {string}
+         */
+        ReviewSemanticStatus: "enhanced" | "fallback_text" | "unsupported_language" | "equivalent" | "new_file" | "deleted_file" | "large_file";
+        /** ReviewStats */
+        ReviewStats: {
+            /**
+             * Added Lines
+             * @default 0
+             */
+            added_lines: number;
+            /**
+             * Removed Lines
+             * @default 0
+             */
+            removed_lines: number;
+            /**
+             * Changed Line Count
+             * @default 0
+             */
+            changed_line_count: number;
+            /**
+             * Hunk Count
+             * @default 0
+             */
+            hunk_count: number;
+        };
+        /** ReviewSummaryCounts */
+        ReviewSummaryCounts: {
+            /**
+             * Total Files
+             * @default 0
+             */
+            total_files: number;
+            /**
+             * Primary Files
+             * @default 0
+             */
+            primary_files: number;
+            /**
+             * Total Claims
+             * @default 0
+             */
+            total_claims: number;
+            /**
+             * Total Contributions
+             * @default 0
+             */
+            total_contributions: number;
+        };
+        /** ReviewUnavailableResponse */
+        ReviewUnavailableResponse: {
+            analysis_status: components["schemas"]["JobStatus"];
+            /** Build Error */
+            build_error: string;
+            /** Detail */
+            detail: string;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -576,6 +938,159 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ResultResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_analysis_review_api_v1_analyses__job_id__review_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewManifestResponse"];
+                };
+            };
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewBuildStatusResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewUnavailableResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rebuild_analysis_review_api_v1_analyses__job_id__review_rebuild_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewBuildStatusResponse"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewUnavailableResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_analysis_review_file_api_v1_analyses__job_id__review_files__file_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReviewFileResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_analysis_review_file_rendered_api_v1_analyses__job_id__review_files__file_id__rendered_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/html": string;
                 };
             };
             /** @description Validation Error */

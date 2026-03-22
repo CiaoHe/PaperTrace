@@ -1,4 +1,5 @@
 import "./globals.css";
+import "react-diff-view/style/index.css";
 
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
