@@ -564,6 +564,10 @@ export interface components {
             source_path?: string | null;
             /** Current Path */
             current_path?: string | null;
+            /** Source Content */
+            source_content?: string | null;
+            /** Current Content */
+            current_content?: string | null;
             diff_type: components["schemas"]["ReviewDiffType"];
             match_type: components["schemas"]["ReviewMatchType"];
             semantic_status: components["schemas"]["ReviewSemanticStatus"];

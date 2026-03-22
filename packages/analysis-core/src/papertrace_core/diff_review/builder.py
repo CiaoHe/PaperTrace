@@ -26,9 +26,13 @@ from papertrace_core.diff_review.models import (
     ReviewSemanticStatus,
     ReviewSummaryCounts,
 )
-from papertrace_core.diff_review.projection import project_contribution_status
+from papertrace_core.diff_review.projection import project_analysis_result_from_review, project_review_links
 from papertrace_core.diff_review.rendering import render_prebuilt_diff2html
-from papertrace_core.diff_review.retrieval import build_file_candidates, retrieve_claim_file_links
+from papertrace_core.diff_review.retrieval import (
+    ReviewCandidateInput,
+    build_hunk_candidates,
+    retrieve_claim_hunk_links,
+)
 from papertrace_core.diff_review.revision import module_source_digest, resolve_repo_revision
 from papertrace_core.diff_review.unified_diff import (
     build_file_payload,
@@ -45,9 +49,10 @@ from papertrace_core.storage import (
     mark_review_session_building,
     mark_review_session_failed,
     mark_review_session_ready,
+    replace_job_result,
 )
 
-ARTIFACT_VERSION = "review-v2-phase2"
+ARTIFACT_VERSION = "review-v2-phase6"
 
 
 def build_review_artifact_for_job(job_id: str) -> ReviewManifest | None:
@@ -169,11 +174,12 @@ def build_diff_settings_fingerprint() -> str:
     settings = get_settings()
     import papertrace_core.diff_review.claims as claims
     import papertrace_core.diff_review.file_mapper as file_mapper
+    import papertrace_core.diff_review.retrieval as retrieval
 
     payload = {
         "file_mapper_version": module_source_digest(file_mapper),
         "claim_splitter_version": module_source_digest(claims),
-        "link_retrieval_version": "phase2-bootstrap",
+        "link_retrieval_version": module_source_digest(retrieval),
         "context_lines": settings.review_context_lines,
         "repo_analysis_extensions": settings.repo_analysis_extensions,
         "repo_analysis_exclude_dirs": settings.repo_analysis_exclude_dirs,
@@ -206,8 +212,13 @@ def _build_manifest(
     settings = get_settings()
     mapper = FileMapper(settings)
     pairs = mapper.map_repositories(source_root, current_root)
+    mark_review_session_building(
+        job_id,
+        build_phase=ReviewBuildPhase.CLAIM_EXTRACTION,
+        detail="Extracting review claims.",
+    )
     claim_entries = _build_claim_index(result)
-    candidate_inputs: list[tuple[str, str, str]] = []
+    candidate_inputs: list[ReviewCandidateInput] = []
     prepared_pairs: list[tuple[FilePair, str, str, ReviewSemanticStatus]] = []
     files_dir = artifact_dir / "files"
     raw_dir = artifact_dir / "raw"
@@ -253,7 +264,14 @@ def _build_manifest(
         )
         file_path = pair.current_path or pair.source_path or ""
         semantic_status = _semantic_status_for_pair(pair)
-        candidate_inputs.append((file_path, pair.language, raw_unified_diff))
+        candidate_inputs.append(
+            ReviewCandidateInput(
+                file_id=file_id,
+                file_path=file_path,
+                language=pair.language,
+                raw_unified_diff=raw_unified_diff,
+            )
+        )
         prepared_pairs.append(
             (
                 pair,
@@ -262,22 +280,43 @@ def _build_manifest(
                 semantic_status,
             )
         )
-    candidate_files = build_file_candidates(result, candidate_inputs, settings)
-    deterministic_links = retrieve_claim_file_links(
+    mark_review_session_building(
+        job_id,
+        build_phase=ReviewBuildPhase.DETERMINISTIC_LINKING,
+        detail="Linking claims to diff hunks.",
+    )
+    candidate_hunks = build_hunk_candidates(result, candidate_inputs, settings)
+    retrieval = retrieve_claim_hunk_links(
         claim_entries=claim_entries,
         contributions=result.contributions,
-        candidate_files=candidate_files,
+        candidate_hunks=candidate_hunks,
     )
-    claim_entries, contribution_status, linked_claims_by_file = project_contribution_status(
-        claim_entries,
-        deterministic_links,
+    initial_refinement_status = (
+        ReviewRefinementStatus.QUEUED
+        if settings.llm_base_url and settings.llm_model
+        else ReviewRefinementStatus.DISABLED
     )
+    projection = project_review_links(
+        claim_entries=claim_entries,
+        links=retrieval.accepted_links,
+        candidate_links_by_claim_id=retrieval.candidates_by_claim_id,
+        refinement_status=initial_refinement_status,
+    )
+    projected_result = project_analysis_result_from_review(
+        result,
+        projection.claim_entries,
+        retrieval.accepted_links,
+    )
+    replace_job_result(job_id, projected_result)
 
     for index, (pair, file_id, raw_unified_diff, semantic_status) in enumerate(prepared_pairs, start=1):
-        linked_claim_ids, linked_contribution_keys = linked_claims_by_file.get(
-            pair.current_path or pair.source_path or "",
-            ([], []),
+        file_projection = projection.file_links.get(
+            file_id,
+            None,
         )
+        linked_claim_ids = file_projection.linked_claim_ids if file_projection is not None else []
+        linked_contribution_keys = file_projection.linked_contribution_keys if file_projection is not None else []
+        linked_cluster_ids = file_projection.linked_cluster_ids if file_projection is not None else []
         fallback_mode = ReviewFallbackMode.NONE
         fallback_html_path: str | None = None
         raw_diff_path = raw_dir / f"{file_id}.diff"
@@ -296,6 +335,25 @@ def _build_manifest(
                 linked_claim_ids=linked_claim_ids,
                 linked_contribution_keys=linked_contribution_keys,
             )
+            stored_payload.source_content = _read_review_file_content(source_root, pair.source_path)
+            stored_payload.current_content = _read_review_file_content(current_root, pair.current_path)
+            stored_payload.linked_cluster_ids = linked_cluster_ids
+            updated_hunks = []
+            for hunk in stored_payload.hunks:
+                hunk_projection = projection.hunk_links.get(hunk.hunk_id)
+                updated_hunks.append(
+                    hunk.model_copy(
+                        update={
+                            "linked_claim_ids": (
+                                hunk_projection.linked_claim_ids if hunk_projection is not None else []
+                            ),
+                            "linked_contribution_keys": (
+                                hunk_projection.linked_contribution_keys if hunk_projection is not None else []
+                            ),
+                        }
+                    )
+                )
+            stored_payload.hunks = updated_hunks
         except Exception:
             stored_payload = build_raw_diff_only_payload(
                 file_id=file_id,
@@ -308,10 +366,14 @@ def _build_manifest(
                 linked_claim_ids=linked_claim_ids,
                 linked_contribution_keys=linked_contribution_keys,
             )
+            stored_payload.source_content = _read_review_file_content(source_root, pair.source_path)
+            stored_payload.current_content = _read_review_file_content(current_root, pair.current_path)
+            stored_payload.linked_cluster_ids = linked_cluster_ids
         changed_line_count = stored_payload.stats.changed_line_count
-        is_large_file = raw_unified_diff.count("\n") > settings.review_large_file_line_threshold or len(
-            raw_unified_diff.encode("utf-8")
-        ) > settings.review_large_file_diff_bytes_threshold
+        is_large_file = (
+            raw_unified_diff.count("\n") > settings.review_large_file_line_threshold
+            or len(raw_unified_diff.encode("utf-8")) > settings.review_large_file_diff_bytes_threshold
+        )
         if is_large_file:
             mark_review_session_building(
                 job_id,
@@ -325,9 +387,7 @@ def _build_manifest(
             rendered_path = rendered_dir / f"{file_id}.html"
             if render_prebuilt_diff2html(raw_diff_path, rendered_path, settings):
                 stored_payload.fallback_mode = ReviewFallbackMode.DIFF2HTML_PREBUILT
-                stored_payload.fallback_html_path = (
-                    f"/api/v1/analyses/{job_id}/review/files/{file_id}/rendered"
-                )
+                stored_payload.fallback_html_path = f"/api/v1/analyses/{job_id}/review/files/{file_id}/rendered"
             else:
                 stored_payload.fallback_mode = ReviewFallbackMode.RAW_DIFF_ONLY
             stored_payload.semantic_status = ReviewSemanticStatus.LARGE_FILE
@@ -364,6 +424,14 @@ def _build_manifest(
             item.current_path or item.source_path or "",
         ),
     )
+    mark_review_session_building(
+        job_id,
+        build_phase=ReviewBuildPhase.PERSISTING,
+        build_progress=1.0,
+        files_total=len(pairs),
+        files_done=len(pairs),
+        detail="Persisting review artifact.",
+    )
     manifest = ReviewManifest(
         source_repo=source_repo,
         current_repo=current_repo,
@@ -375,8 +443,8 @@ def _build_manifest(
             key: ReviewBucket(label=_bucket_label(key), count=len(files), files=files)
             for key, files in secondary.items()
         },
-        claim_index=claim_entries,
-        contribution_status=contribution_status,
+        claim_index=projection.claim_entries,
+        contribution_status=projection.contribution_status,
         summary_counts=ReviewSummaryCounts(
             total_files=len(file_tree_entries),
             primary_files=len(sorted_primary),
@@ -385,7 +453,7 @@ def _build_manifest(
         ),
         artifact_version=ARTIFACT_VERSION,
         cache_key=cache_key,
-        refinement_status=ReviewRefinementStatus.DISABLED,
+        refinement_status=initial_refinement_status,
     )
     return manifest
 
@@ -479,3 +547,12 @@ def _build_file_tree(entries: list[ReviewFileEntry]) -> list[ReviewFileTreeNode]
             continue
         upsert(root, file_path.split("/"), entry)
     return root
+
+
+def _read_review_file_content(root: Path, relative_path: str | None) -> str | None:
+    if relative_path is None:
+        return None
+    file_path = root / relative_path
+    if not file_path.exists():
+        return None
+    return file_path.read_text(encoding="utf-8", errors="ignore")

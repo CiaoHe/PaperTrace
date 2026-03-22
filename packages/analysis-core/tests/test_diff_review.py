@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
 from papertrace_core.diff_review.builder import _semantic_status_for_pair
 from papertrace_core.diff_review.claims import split_contribution_claims
 from papertrace_core.diff_review.file_mapper import FileMapper, FilePair, MatchCandidate
@@ -10,18 +11,33 @@ from papertrace_core.diff_review.models import (
     ReviewClaimIndexEntry,
     ReviewContributionStatus,
     ReviewDiffType,
+    ReviewFallbackMode,
     ReviewMatchType,
+    ReviewRefinementStatus,
     ReviewSemanticStatus,
 )
-from papertrace_core.diff_review.projection import project_contribution_status
-from papertrace_core.diff_review.retrieval import build_file_candidates, retrieve_claim_file_links
+from papertrace_core.diff_review.projection import project_analysis_result_from_review, project_review_links
+from papertrace_core.diff_review.retrieval import (
+    ReviewCandidateInput,
+    build_hunk_candidates,
+    retrieve_claim_hunk_links,
+)
 from papertrace_core.diff_review.revision import resolve_repo_revision
 from papertrace_core.diff_review.unified_diff import (
     build_file_payload,
     build_raw_diff_only_payload,
     generate_raw_unified_diff,
 )
-from papertrace_core.models import AnalysisResult, DiffChangeType, DiffCluster, PaperContribution
+from papertrace_core.models import (
+    AnalysisResult,
+    AnalysisRuntimeMetadata,
+    BaseRepoCandidate,
+    DiffChangeType,
+    DiffCluster,
+    PaperContribution,
+    PaperSourceKind,
+    ProcessorMode,
+)
 from papertrace_core.settings import Settings
 
 
@@ -38,12 +54,12 @@ def init_git_repo(root: Path, files: dict[str, str]) -> None:
     subprocess.run(["git", "-C", str(root), "commit", "-m", "init"], check=True, capture_output=True, text=True)
 
 
-def test_file_mapper_marks_ambiguous_candidate(tmp_path: Path, monkeypatch) -> None:
+def test_file_mapper_marks_ambiguous_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source_root = tmp_path / "source"
     current_root = tmp_path / "current"
     init_git_repo(source_root, {"src/a.py": "alpha\n", "src/b.py": "beta\n"})
     init_git_repo(current_root, {"src/new_file.py": "gamma\n"})
-    settings = Settings(database_url="sqlite+pysqlite:///:memory:")
+    settings = Settings()
     mapper = FileMapper(settings)
 
     monkeypatch.setattr(
@@ -60,12 +76,12 @@ def test_file_mapper_marks_ambiguous_candidate(tmp_path: Path, monkeypatch) -> N
     assert any(pair.match_type == ReviewMatchType.AMBIGUOUS for pair in pairs)
 
 
-def test_file_mapper_marks_low_confidence_candidate(tmp_path: Path, monkeypatch) -> None:
+def test_file_mapper_marks_low_confidence_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source_root = tmp_path / "source"
     current_root = tmp_path / "current"
     init_git_repo(source_root, {"src/a.py": "alpha\n"})
     init_git_repo(current_root, {"src/new_file.py": "gamma\n"})
-    settings = Settings(database_url="sqlite+pysqlite:///:memory:")
+    settings = Settings()
     mapper = FileMapper(settings)
 
     monkeypatch.setattr(
@@ -84,7 +100,7 @@ def test_unified_diff_hunk_ids_are_stable(tmp_path: Path) -> None:
     current_root = tmp_path / "current"
     init_git_repo(source_root, {"src/model.py": "def forward(x):\n    return x + 1\n"})
     init_git_repo(current_root, {"src/model.py": "def forward(x):\n    return x + 2\n"})
-    settings = Settings(database_url="sqlite+pysqlite:///:memory:")
+    settings = Settings()
 
     raw_diff = generate_raw_unified_diff(
         source_root,
@@ -97,11 +113,11 @@ def test_unified_diff_hunk_ids_are_stable(tmp_path: Path) -> None:
         file_id="file-1",
         source_path="src/model.py",
         current_path="src/model.py",
-        diff_type="modified",
+        diff_type=ReviewDiffType.MODIFIED,
         match_type=ReviewMatchType.EXACT_PATH,
         raw_unified_diff=raw_diff,
-        semantic_status="fallback_text",
-        fallback_mode="none",
+        semantic_status=ReviewSemanticStatus.FALLBACK_TEXT,
+        fallback_mode=ReviewFallbackMode.NONE,
         fallback_html_path=None,
         linked_claim_ids=[],
         linked_contribution_keys=[],
@@ -110,11 +126,11 @@ def test_unified_diff_hunk_ids_are_stable(tmp_path: Path) -> None:
         file_id="file-1",
         source_path="src/model.py",
         current_path="src/model.py",
-        diff_type="modified",
+        diff_type=ReviewDiffType.MODIFIED,
         match_type=ReviewMatchType.EXACT_PATH,
         raw_unified_diff=raw_diff,
-        semantic_status="fallback_text",
-        fallback_mode="none",
+        semantic_status=ReviewSemanticStatus.FALLBACK_TEXT,
+        fallback_mode=ReviewFallbackMode.NONE,
         fallback_html_path=None,
         linked_claim_ids=[],
         linked_contribution_keys=[],
@@ -129,7 +145,7 @@ def test_review_file_payload_hunks_are_metadata_only(tmp_path: Path) -> None:
     current_root = tmp_path / "current"
     init_git_repo(source_root, {"src/model.py": "def forward(x):\n    hidden = x + 1\n    return hidden\n"})
     init_git_repo(current_root, {"src/model.py": "def forward(x):\n    hidden = x + 2\n    return hidden * 2\n"})
-    settings = Settings(database_url="sqlite+pysqlite:///:memory:")
+    settings = Settings()
 
     raw_diff = generate_raw_unified_diff(
         source_root,
@@ -146,7 +162,7 @@ def test_review_file_payload_hunks_are_metadata_only(tmp_path: Path) -> None:
         match_type=ReviewMatchType.EXACT_PATH,
         raw_unified_diff=raw_diff,
         semantic_status=ReviewSemanticStatus.FALLBACK_TEXT,
-        fallback_mode="none",
+        fallback_mode=ReviewFallbackMode.NONE,
         fallback_html_path=None,
         linked_claim_ids=[],
         linked_contribution_keys=[],
@@ -182,7 +198,7 @@ def test_resolve_repo_revision_falls_back_to_content_fingerprint(tmp_path: Path)
     repo_root = tmp_path / "plain-dir"
     (repo_root / "src").mkdir(parents=True)
     (repo_root / "src" / "module.py").write_text("def run():\n    return 1\n", encoding="utf-8")
-    settings = Settings(database_url="sqlite+pysqlite:///:memory:")
+    settings = Settings()
 
     revision = resolve_repo_revision(repo_root, settings)
 
@@ -280,49 +296,56 @@ def test_deterministic_claim_linking_projects_statuses() -> None:
             status=ReviewContributionStatus.UNMAPPED,
         ),
     ]
-    candidates = build_file_candidates(
-        AnalysisResult(
-            case_slug="custom",
-            summary="custom",
-            selected_base_repo={"repo_url": "base", "strategy": "test", "confidence": 1.0, "evidence": "test"},
-            base_repo_candidates=[],
-            contributions=[contribution_a, contribution_b],
-            diff_clusters=[
-                DiffCluster(
-                    id="D1",
-                    label="Adapter layer",
-                    change_type=DiffChangeType.NEW_MODULE,
-                    files=["peft/tuners/lora/layer.py"],
-                    summary="Adds LoRA adapter layer wiring.",
-                    semantic_tags=["adapter", "low-rank"],
-                ),
-                DiffCluster(
-                    id="D2",
-                    label="Freeze backbone",
-                    change_type=DiffChangeType.MODIFIED_TRAIN,
-                    files=["peft/utils/other.py"],
-                    summary="Freezes backbone parameters for LoRA-only training.",
-                    semantic_tags=["freeze", "optimizer"],
-                ),
-            ],
-            mappings=[],
-            metadata={
-                "paper_source_kind": "text_reference",
-                "paper_fetch_mode": "heuristic",
-                "parser_mode": "heuristic",
-                "repo_tracer_mode": "heuristic",
-                "diff_analyzer_mode": "heuristic",
-                "contribution_mapper_mode": "heuristic",
-                "selected_repo_strategy": "test",
-                "fallback_notes": [],
-            },
-            warnings=[],
+    result = AnalysisResult(
+        case_slug="custom",
+        summary="custom",
+        selected_base_repo=BaseRepoCandidate(
+            repo_url="base",
+            strategy="test",
+            confidence=1.0,
+            evidence="test",
         ),
+        base_repo_candidates=[],
+        contributions=[contribution_a, contribution_b],
+        diff_clusters=[
+            DiffCluster(
+                id="D1",
+                label="Adapter layer",
+                change_type=DiffChangeType.NEW_MODULE,
+                files=["peft/tuners/lora/layer.py"],
+                summary="Adds LoRA adapter layer wiring.",
+                semantic_tags=["adapter", "low-rank"],
+            ),
+            DiffCluster(
+                id="D2",
+                label="Freeze backbone",
+                change_type=DiffChangeType.MODIFIED_TRAIN,
+                files=["peft/utils/other.py"],
+                summary="Freezes backbone parameters for LoRA-only training.",
+                semantic_tags=["freeze", "optimizer"],
+            ),
+        ],
+        mappings=[],
+        metadata=AnalysisRuntimeMetadata(
+            paper_source_kind=PaperSourceKind.TEXT_REFERENCE,
+            paper_fetch_mode=ProcessorMode.HEURISTIC,
+            parser_mode=ProcessorMode.HEURISTIC,
+            repo_tracer_mode=ProcessorMode.HEURISTIC,
+            diff_analyzer_mode=ProcessorMode.HEURISTIC,
+            contribution_mapper_mode=ProcessorMode.HEURISTIC,
+            selected_repo_strategy="test",
+            fallback_notes=[],
+        ),
+        warnings=[],
+    )
+    candidate_hunks = build_hunk_candidates(
+        result,
         [
-            (
-                "peft/tuners/lora/layer.py",
-                "python",
-                (
+            ReviewCandidateInput(
+                file_id="file-1",
+                file_path="peft/tuners/lora/layer.py",
+                language="python",
+                raw_unified_diff=(
                     "--- a/peft/tuners/lora/layer.py\n"
                     "+++ b/peft/tuners/lora/layer.py\n"
                     "@@ -1 +1 @@\n"
@@ -331,32 +354,119 @@ def test_deterministic_claim_linking_projects_statuses() -> None:
                     "+def inject_adapter(module):\n"
                 ),
             ),
-            (
-                "peft/utils/other.py",
-                "python",
-                (
+            ReviewCandidateInput(
+                file_id="file-2",
+                file_path="peft/utils/other.py",
+                language="python",
+                raw_unified_diff=(
                     "--- a/peft/utils/other.py\n"
                     "+++ b/peft/utils/other.py\n"
                     "@@ -1 +1 @@\n"
                     "-def mark_trainable(model):\n"
                     "+def freeze_backbone_and_train_lora(model):\n"
                     "+    backbone_is_frozen = True\n"
-                    "+    parameter.requires_grad = \"lora\" in name\n"
-                    ),
+                    '+    parameter.requires_grad = "lora" in name\n'
                 ),
+            ),
         ],
-        Settings(database_url="sqlite+pysqlite:///:memory:"),
+        Settings(),
     )
-
-    links = retrieve_claim_file_links(
+    retrieval = retrieve_claim_hunk_links(
         claim_entries=claims,
         contributions=[contribution_a, contribution_b],
-        candidate_files=candidates,
+        candidate_hunks=candidate_hunks,
     )
-    updated_claims, contribution_status, links_by_file = project_contribution_status(claims, links)
+    projection = project_review_links(
+        claim_entries=claims,
+        links=retrieval.accepted_links,
+        candidate_links_by_claim_id=retrieval.candidates_by_claim_id,
+        refinement_status=ReviewRefinementStatus.DISABLED,
+    )
+    projected_result = project_analysis_result_from_review(result, projection.claim_entries, retrieval.accepted_links)
 
-    assert len(links) >= 2
-    assert {entry.status for entry in contribution_status} == {ReviewContributionStatus.MAPPED}
-    assert all(entry.status == ReviewContributionStatus.MAPPED for entry in updated_claims)
-    assert "peft/tuners/lora/layer.py" in links_by_file
-    assert "peft/utils/other.py" in links_by_file
+    assert len(retrieval.accepted_links) >= 2
+    assert {entry.status for entry in projection.contribution_status} == {ReviewContributionStatus.MAPPED}
+    assert all(entry.status == ReviewContributionStatus.MAPPED for entry in projection.claim_entries)
+    assert set(projection.file_links) == {"file-1", "file-2"}
+    assert len(projection.hunk_links) >= 2
+    assert {mapping.diff_cluster_id for mapping in projected_result.mappings} == {"D1", "D2"}
+    assert projected_result.unmatched_contribution_ids == []
+    assert projected_result.unmatched_diff_cluster_ids == []
+
+
+def test_project_review_links_marks_refining_when_candidates_exist_without_acceptance() -> None:
+    claim = ReviewClaimIndexEntry(
+        claim_id="claim-1",
+        claim_label="C1.S1",
+        contribution_key="contrib-1",
+        contribution_id="C1",
+        section="Method",
+        claim_text="Inject low-rank adapter matrices into target modules.",
+        status=ReviewContributionStatus.UNMAPPED,
+    )
+    candidate_link = retrieve_claim_hunk_links(
+        claim_entries=[claim],
+        contributions=[
+            PaperContribution(
+                id="C1",
+                title="LoRA adapter modules",
+                section="Method",
+                keywords=["adapter", "low-rank"],
+                impl_hints=["Inject lora adapter matrices into target modules."],
+            )
+        ],
+        candidate_hunks=[
+            build_hunk_candidates(
+                AnalysisResult(
+                    case_slug="custom",
+                    summary="custom",
+                    selected_base_repo=BaseRepoCandidate(
+                        repo_url="base",
+                        strategy="test",
+                        confidence=1.0,
+                        evidence="test",
+                    ),
+                    base_repo_candidates=[],
+                    contributions=[],
+                    diff_clusters=[],
+                    mappings=[],
+                    metadata=AnalysisRuntimeMetadata(
+                        paper_source_kind=PaperSourceKind.TEXT_REFERENCE,
+                        paper_fetch_mode=ProcessorMode.HEURISTIC,
+                        parser_mode=ProcessorMode.HEURISTIC,
+                        repo_tracer_mode=ProcessorMode.HEURISTIC,
+                        diff_analyzer_mode=ProcessorMode.HEURISTIC,
+                        contribution_mapper_mode=ProcessorMode.HEURISTIC,
+                        selected_repo_strategy="test",
+                        fallback_notes=[],
+                    ),
+                    warnings=[],
+                ),
+                [
+                    ReviewCandidateInput(
+                        file_id="file-1",
+                        file_path="peft/tuners/lora/layer.py",
+                        language="python",
+                        raw_unified_diff=(
+                            "--- a/peft/tuners/lora/layer.py\n"
+                            "+++ b/peft/tuners/lora/layer.py\n"
+                            "@@ -1 +1 @@\n"
+                            "-class LinearLayer\n"
+                            "+class LoraAdapterLayer\n"
+                            "+def inject_adapter(module):\n"
+                        ),
+                    )
+                ],
+                Settings(),
+            )[0]
+        ],
+    )
+    projection = project_review_links(
+        claim_entries=[claim],
+        links=[],
+        candidate_links_by_claim_id=candidate_link.candidates_by_claim_id,
+        refinement_status=ReviewRefinementStatus.QUEUED,
+    )
+
+    assert projection.claim_entries[0].status == ReviewContributionStatus.REFINING
+    assert projection.contribution_status[0].status == ReviewContributionStatus.REFINING

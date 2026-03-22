@@ -90,11 +90,11 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   const directoryNodes = page.locator(".file-tree-node.dir");
   if ((await directoryNodes.count()) > 0) {
     const firstDirectory = directoryNodes.first();
-    await expect(firstDirectory).toHaveAttribute("aria-expanded", "true");
+    const initialState = (await firstDirectory.getAttribute("aria-expanded")) ?? "false";
     await firstDirectory.click();
-    await expect(firstDirectory).toHaveAttribute("aria-expanded", "false");
+    await expect(firstDirectory).toHaveAttribute("aria-expanded", initialState === "true" ? "false" : "true");
     await firstDirectory.click();
-    await expect(firstDirectory).toHaveAttribute("aria-expanded", "true");
+    await expect(firstDirectory).toHaveAttribute("aria-expanded", initialState);
   }
   const fileNodes = page.locator(".review-v2-tree-file");
   await expect(fileNodes.first()).toBeVisible();

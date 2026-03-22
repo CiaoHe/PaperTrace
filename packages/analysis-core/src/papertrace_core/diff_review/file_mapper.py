@@ -56,11 +56,7 @@ def list_reviewable_files(repo_root: Path, settings: Settings) -> dict[str, Path
         )
         tracked_files = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
     except (FileNotFoundError, subprocess.SubprocessError):
-        tracked_files = [
-            path.relative_to(repo_root).as_posix()
-            for path in repo_root.rglob("*")
-            if path.is_file()
-        ]
+        tracked_files = [path.relative_to(repo_root).as_posix() for path in repo_root.rglob("*") if path.is_file()]
     result: dict[str, Path] = {}
     for relative_path in tracked_files:
         if not should_include_repo_file(relative_path, settings):

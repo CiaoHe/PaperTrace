@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from papertrace_core.cases import example_payloads
+from papertrace_core.diff_review.models import ReviewRefinementStatus
 from papertrace_core.inputs import normalize_paper_source, normalize_repo_url
 from papertrace_core.models import AnalysisRequest, HealthResponse, PaperSourceKind
 from papertrace_core.settings import get_settings
@@ -24,6 +25,7 @@ from papertrace_core.storage import (
     get_review_status,
     init_db,
     list_jobs,
+    reset_review_session_for_rebuild,
 )
 from papertrace_worker.tasks import build_review_artifact, enqueue_analysis
 from pydantic import ValidationError
@@ -350,7 +352,16 @@ def rebuild_analysis_review(job_id: str) -> Response:
         if status_body is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review status not found")
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=status_body.model_dump(mode="json"))
+    settings = get_settings()
     ensure_review_session(job_id, paper_source=summary.paper_source, current_repo_url=summary.repo_url)
+    reset_review_session_for_rebuild(
+        job_id,
+        refinement_status=(
+            ReviewRefinementStatus.QUEUED
+            if settings.llm_base_url and settings.llm_model
+            else ReviewRefinementStatus.DISABLED
+        ),
+    )
     build_review_artifact.delay(job_id)
     refreshed_status = get_review_status(job_id)
     if refreshed_status is None:

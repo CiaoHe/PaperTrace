@@ -176,6 +176,8 @@ class ReviewFilePayload(BaseModel):
     file_id: str
     source_path: str | None = None
     current_path: str | None = None
+    source_content: str | None = None
+    current_content: str | None = None
     diff_type: ReviewDiffType
     match_type: ReviewMatchType
     semantic_status: ReviewSemanticStatus
@@ -221,6 +223,8 @@ class StoredReviewFilePayload(BaseModel):
     file_id: str
     source_path: str | None = None
     current_path: str | None = None
+    source_content: str | None = None
+    current_content: str | None = None
     diff_type: ReviewDiffType
     match_type: ReviewMatchType
     semantic_status: ReviewSemanticStatus

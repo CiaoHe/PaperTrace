@@ -1180,9 +1180,32 @@ select {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
   padding: 12px 18px;
   border-bottom: 1px solid #d8dee4;
   background: #f6f8fa;
+}
+
+.review-v2-view-toggle {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.review-v2-view-tab {
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #24292f;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.review-v2-view-tab.active {
+  border-color: #0969da;
+  background: #dbeafe;
+  color: #0a3069;
 }
 
 .review-v2-diff-view {

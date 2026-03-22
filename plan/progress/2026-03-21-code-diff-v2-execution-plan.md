@@ -654,7 +654,7 @@
   - [x] `/analyses/[jobId]/evidence` switched to the review shell
   - [x] three-pane review layout, bucket tabs, `react-diff-view`, and raw/HTML fallbacks are live
   - [x] web e2e covers evidence route entry, claim interaction, file interaction, and bucket visibility
-  - [ ] Monaco full-file deep-read is still only a raw diff fallback, not a dedicated full-file artifact reader
+  - [x] review file payloads now include source/current full-file content and the diff pane supports `diff` / `source` / `current` deep-read mode through Monaco
 
 ### Phase 5: Claim Extraction And Deterministic Linking
 
@@ -671,9 +671,9 @@
   - unmapped status
 - Status:
   - [x] deterministic claim splitting and lightweight claim index are in place
-  - [x] first-pass deterministic file-level retrieval and projection are wired into review artifact build
-  - [ ] retrieval is still file-level; hunk-level deterministic linking and richer scoring remain
-  - [ ] summary/result API projections still preserve old compatibility mode and are not yet fully sourced from review links
+  - [x] hunk-level deterministic retrieval is wired into review artifact build with stable `hunk_id` joins
+  - [x] claim, hunk, file, and contribution projection are derived from accepted deterministic links
+  - [x] result payload compatibility fields (`mappings`, `unmatched_contribution_ids`, `unmatched_diff_cluster_ids`) are now projected back from review links
 
 ### Phase 6: LLM Refinement
 
@@ -689,7 +689,9 @@
   - `ready`
   - rebuild after failed refinement
 - Status:
-  - [ ] not started
+  - [x] `refine_review_links(job_id)` runs as a separate Celery task and never blocks the base review artifact
+  - [x] refinement state transitions `disabled | queued | running | ready | failed` are persisted and surfaced through the review manifest/status flow
+  - [x] provider failures degrade to deterministic review availability and leave the artifact usable
 
 ### Phase 7: Regression And Progress Alignment
 
@@ -699,7 +701,10 @@
   - `make e2e`
   - updated progress status docs
 - Status:
-  - [ ] not started
+  - [x] `make lint` passes
+  - [x] `make test` passes
+  - [x] `make e2e` passes on isolated local ports
+  - [x] progress status doc updated to match the implemented review v2 state
 
 ## Tracking Checklist
 
@@ -709,12 +714,11 @@
 - [x] Review status endpoints implemented
 - [x] Artifact store and cache reuse implemented
 - [x] Large-file fallback pre-render implemented
-- [ ] Review shell switched to `react-diff-view`
 - [x] Review shell switched to `react-diff-view`
 - [x] Claim extraction implemented
-- [ ] Deterministic claim-hunk linking implemented
-- [ ] LLM refinement implemented
-- [ ] Projection back to summary models implemented
+- [x] Deterministic claim-hunk linking implemented
+- [x] LLM refinement implemented
+- [x] Projection back to summary models implemented
 - [x] Status docs updated after rollout
 
 ## Acceptance Criteria

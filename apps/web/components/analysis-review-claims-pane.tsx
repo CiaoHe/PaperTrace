@@ -58,7 +58,8 @@ export function AnalysisReviewClaimsPane({
         {orderedClaims.map((claim) => {
           const isActive = claim.claim_id === selectedClaimId;
           const isLinked = linkedClaimIds.has(claim.claim_id);
-          const status = contributionStatus.get(claim.contribution_key) ?? claim.status;
+          const status = claim.status;
+          const contributionState = contributionStatus.get(claim.contribution_key) ?? claim.status;
           return (
             <button
               className={`review-v2-claim-card${isActive ? " active" : ""}${isLinked ? " linked" : ""}`}
@@ -74,6 +75,7 @@ export function AnalysisReviewClaimsPane({
               <div className="review-v2-claim-meta">
                 <span>{claim.section}</span>
                 <span>{isLinked ? "linked to current file" : "browse to locate linked file"}</span>
+                <span>{`contribution ${contributionState.replaceAll("_", " ")}`}</span>
               </div>
             </button>
           );
@@ -98,6 +100,11 @@ function compareClaims(
   const rightRank = claimStatusRank(contributionStatus.get(right.contribution_key) ?? right.status);
   if (leftRank !== rightRank) {
     return rightRank - leftRank;
+  }
+  const leftContributionRank = claimStatusRank(contributionStatus.get(left.contribution_key) ?? left.status);
+  const rightContributionRank = claimStatusRank(contributionStatus.get(right.contribution_key) ?? right.status);
+  if (leftContributionRank !== rightContributionRank) {
+    return rightContributionRank - leftContributionRank;
   }
   return left.claim_label.localeCompare(right.claim_label);
 }

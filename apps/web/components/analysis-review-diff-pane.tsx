@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReviewFileEntry, ReviewFilePayload } from "@papertrace/contracts";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Diff, type DiffType, type FileData, Hunk, parseDiff } from "react-diff-view";
 
 import { AnalysisMonacoCodeViewer } from "@/components/analysis-monaco-code-viewer";
@@ -22,6 +22,16 @@ export function AnalysisReviewDiffPane({
   error,
   selectedClaimId,
 }: AnalysisReviewDiffPaneProps) {
+  const [viewMode, setViewMode] = useState<"diff" | "source" | "current">("diff");
+  const selectedFileKey = fileEntry?.file_id ?? null;
+
+  useEffect(() => {
+    if (!selectedFileKey) {
+      return;
+    }
+    setViewMode("diff");
+  }, [selectedFileKey]);
+
   const diffFiles = useMemo(() => {
     if (!filePayload?.raw_unified_diff) {
       return [];
@@ -98,8 +108,36 @@ export function AnalysisReviewDiffPane({
         <span>
           {linkedHunkCount} linked hunk{linkedHunkCount === 1 ? "" : "s"}
         </span>
+        <div className="review-v2-view-toggle">
+          {(["diff", "source", "current"] as const).map((mode) => (
+            <button
+              className={`review-v2-view-tab${viewMode === mode ? " active" : ""}`}
+              key={mode}
+              onClick={() => setViewMode(mode)}
+              type="button"
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
       </div>
-      {filePayload.fallback_mode === "diff2html_prebuilt" && filePayload.fallback_html_path ? (
+      {viewMode === "source" ? (
+        <AnalysisMonacoCodeViewer
+          emptyMessage="Source-side full file is not available for this selection."
+          filePath={filePayload.source_path ?? fileLabel}
+          height="720px"
+          rangeLabel="source file"
+          value={filePayload.source_content ?? ""}
+        />
+      ) : viewMode === "current" ? (
+        <AnalysisMonacoCodeViewer
+          emptyMessage="Current-side full file is not available for this selection."
+          filePath={filePayload.current_path ?? fileLabel}
+          height="720px"
+          rangeLabel="current file"
+          value={filePayload.current_content ?? ""}
+        />
+      ) : filePayload.fallback_mode === "diff2html_prebuilt" && filePayload.fallback_html_path ? (
         <iframe
           className="review-v2-rendered-frame"
           src={resolveApiUrl(filePayload.fallback_html_path)}

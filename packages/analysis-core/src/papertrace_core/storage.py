@@ -290,6 +290,15 @@ def update_job_status(
         record.updated_at = datetime.now(UTC)
 
 
+def replace_job_result(job_id: str, result: AnalysisResult) -> None:
+    with session_scope() as session:
+        record = session.get(AnalysisJobRecord, job_id)
+        if record is None:
+            raise ValueError(f"Job not found: {job_id}")
+        record.result_payload = result.model_dump(mode="json")
+        record.updated_at = datetime.now(UTC)
+
+
 def list_jobs() -> list[JobStatusResponse]:
     with session_scope() as session:
         records = session.scalars(select(AnalysisJobRecord).order_by(AnalysisJobRecord.created_at.desc())).all()
@@ -357,6 +366,30 @@ def ensure_review_session(
         record.build_status = build_status.value
         record.build_phase = build_phase.value
         record.updated_at = now
+
+
+def reset_review_session_for_rebuild(
+    job_id: str,
+    *,
+    refinement_status: ReviewRefinementStatus,
+) -> None:
+    with session_scope() as session:
+        record = _get_review_session_record(session, job_id)
+        if record is None:
+            raise ValueError(f"Review session not found: {job_id}")
+        record.build_status = ReviewBuildStatus.PENDING.value
+        record.build_phase = ReviewBuildPhase.WAITING_FOR_ANALYSIS.value
+        record.build_progress = 0.0
+        record.files_total = 0
+        record.files_done = 0
+        record.current_file = None
+        record.build_error = None
+        record.refinement_status = refinement_status.value
+        record.manifest_summary_json = {
+            **(record.manifest_summary_json if isinstance(record.manifest_summary_json, dict) else {}),
+            "detail": "Review rebuild queued.",
+        }
+        record.updated_at = datetime.now(UTC)
 
 
 def mark_review_session_building(
@@ -430,6 +463,62 @@ def mark_review_session_failed(job_id: str, error: str) -> None:
         record.updated_at = datetime.now(UTC)
 
 
+def mark_review_refinement_status(
+    job_id: str,
+    status: ReviewRefinementStatus,
+    *,
+    detail: str | None = None,
+) -> None:
+    with session_scope() as session:
+        record = _get_review_session_record(session, job_id)
+        if record is None:
+            raise ValueError(f"Review session not found: {job_id}")
+        record.refinement_status = status.value
+        if detail is not None:
+            record.manifest_summary_json = {**record.manifest_summary_json, "detail": detail}
+        record.updated_at = datetime.now(UTC)
+
+
+def get_review_artifact_dir(job_id: str) -> Path | None:
+    with session_scope() as session:
+        record = _get_review_session_record(session, job_id)
+        if record is None or not record.artifact_dir:
+            return None
+        return Path(record.artifact_dir)
+
+
+def update_review_manifest(job_id: str, manifest: ReviewManifest) -> None:
+    artifact_dir = get_review_artifact_dir(job_id)
+    if artifact_dir is None:
+        raise ValueError(f"Review artifact directory not found: {job_id}")
+    manifest_path = artifact_dir / "manifest.json"
+    manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
+    with session_scope() as session:
+        record = _get_review_session_record(session, job_id)
+        if record is None:
+            raise ValueError(f"Review session not found: {job_id}")
+        record.manifest_summary_json = ReviewManifestSummary(
+            source_repo=manifest.source_repo,
+            current_repo=manifest.current_repo,
+            source_revision=manifest.source_revision,
+            current_revision=manifest.current_revision,
+            summary_counts=manifest.summary_counts,
+            artifact_version=manifest.artifact_version,
+            cache_key=manifest.cache_key,
+            refinement_status=manifest.refinement_status,
+        ).model_dump(mode="json")
+        record.refinement_status = manifest.refinement_status.value
+        record.updated_at = datetime.now(UTC)
+
+
+def update_review_file_payload(job_id: str, file_id: str, payload: StoredReviewFilePayload) -> None:
+    artifact_dir = get_review_artifact_dir(job_id)
+    if artifact_dir is None:
+        raise ValueError(f"Review artifact directory not found: {job_id}")
+    file_path = artifact_dir / "files" / f"{file_id}.json"
+    file_path.write_text(payload.model_dump_json(indent=2), encoding="utf-8")
+
+
 def get_review_status(job_id: str) -> ReviewBuildStatusResponse | ReviewUnavailableResponse | None:
     summary = get_job_summary(job_id)
     if summary is None:
@@ -459,9 +548,7 @@ def get_review_status(job_id: str) -> ReviewBuildStatusResponse | ReviewUnavaila
             detail = str(record.manifest_summary_json.get("detail", ""))
         if not detail:
             detail = (
-                "Review build is in progress."
-                if record.build_status != ReviewBuildStatus.READY.value
-                else "Ready."
+                "Review build is in progress." if record.build_status != ReviewBuildStatus.READY.value else "Ready."
             )
         return ReviewBuildStatusResponse(
             analysis_status=summary.status,
@@ -501,6 +588,8 @@ def get_review_file_payload(job_id: str, file_id: str) -> ReviewFilePayload | No
             file_id=stored.file_id,
             source_path=stored.source_path,
             current_path=stored.current_path,
+            source_content=stored.source_content,
+            current_content=stored.current_content,
             diff_type=stored.diff_type,
             match_type=stored.match_type,
             semantic_status=stored.semantic_status,
