@@ -17,7 +17,9 @@ import type {
   ReviewUnavailableResponse,
 } from "@papertrace/contracts";
 
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+const LOCAL_API_DEFAULT_URL = "http://127.0.0.1:8000";
+
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? LOCAL_API_DEFAULT_URL;
 
 export type StructuredPaperSourceKind = "arxiv" | "pdf_url" | "text_reference";
 
@@ -31,6 +33,66 @@ export type AnalysisReviewState =
   | { kind: "ready"; review: ReviewManifest }
   | { kind: "building"; status: ReviewBuildStatusResponse }
   | { kind: "unavailable"; status: ReviewUnavailableResponse };
+
+function normalizeBaseUrl(value: string): string {
+  return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+}
+
+function resolveLocalFallbackApiBaseUrl(baseUrl: string): string | null {
+  try {
+    const parsed = new URL(baseUrl);
+    const port = parsed.port || (parsed.protocol === "https:" ? "443" : "80");
+    if (!isLoopbackHost(parsed.hostname) || port === "8000") {
+      return null;
+    }
+    parsed.protocol = "http:";
+    parsed.port = "8000";
+    parsed.pathname = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return normalizeBaseUrl(parsed.toString());
+  } catch {
+    return null;
+  }
+}
+
+async function describeNetworkFailure(requestUrl: string, error: unknown): Promise<Error> {
+  const baseUrl = normalizeBaseUrl(API_BASE_URL);
+  const fallbackBaseUrl = resolveLocalFallbackApiBaseUrl(baseUrl);
+  if (fallbackBaseUrl) {
+    try {
+      const healthResponse = await fetch(`${fallbackBaseUrl}/api/v1/health`, {
+        method: "HEAD",
+        cache: "no-store",
+      });
+      if (healthResponse.ok) {
+        return new Error(
+          `Cannot reach configured API at ${requestUrl}. A local API is responding at ${fallbackBaseUrl}. Restart the web dev server so it picks up the current NEXT_PUBLIC_API_BASE_URL.`,
+        );
+      }
+    } catch {
+      // Ignore fallback probe failures and fall through to the generic message.
+    }
+  }
+
+  const suffix = error instanceof Error && error.message ? ` ${error.message}` : "";
+  return new Error(
+    `Cannot reach API at ${requestUrl}. Check that the API server is running and restart the web dev server if NEXT_PUBLIC_API_BASE_URL changed.${suffix}`.trim(),
+  );
+}
+
+async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const requestUrl = `${normalizeBaseUrl(API_BASE_URL)}${path.startsWith("/") ? path : `/${path}`}`;
+  try {
+    return await fetch(requestUrl, init);
+  } catch (error) {
+    throw await describeNetworkFailure(requestUrl, error);
+  }
+}
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -46,7 +108,7 @@ export async function createAnalysis(
 ): Promise<JobStatusResponse> {
   const response =
     "paperFile" in payload
-      ? await fetch(`${API_BASE_URL}/api/v1/analyses`, {
+      ? await apiFetch("/api/v1/analyses", {
           method: "POST",
           body: (() => {
             const formData = new FormData();
@@ -64,7 +126,7 @@ export async function createAnalysis(
             return formData;
           })(),
         })
-      : await fetch(`${API_BASE_URL}/api/v1/analyses`, {
+      : await apiFetch("/api/v1/analyses", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -77,7 +139,7 @@ export async function createAnalysis(
 }
 
 export async function getAnalysis(jobId: string): Promise<JobStatusResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/analyses/${jobId}`, {
+  const response = await apiFetch(`/api/v1/analyses/${jobId}`, {
     cache: "no-store",
   });
   const body = await parseResponse<CreateAnalysisResponse>(response);
@@ -85,7 +147,7 @@ export async function getAnalysis(jobId: string): Promise<JobStatusResponse> {
 }
 
 export async function getAnalysisResult(jobId: string): Promise<AnalysisResult> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/analyses/${jobId}/result`, {
+  const response = await apiFetch(`/api/v1/analyses/${jobId}/result`, {
     cache: "no-store",
   });
   const body = await parseResponse<ResultResponse>(response);
@@ -93,7 +155,7 @@ export async function getAnalysisResult(jobId: string): Promise<AnalysisResult> 
 }
 
 export async function getAnalysisReview(jobId: string): Promise<AnalysisReviewState> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/analyses/${jobId}/review`, {
+  const response = await apiFetch(`/api/v1/analyses/${jobId}/review`, {
     cache: "no-store",
   });
 
@@ -115,7 +177,7 @@ export async function getAnalysisReview(jobId: string): Promise<AnalysisReviewSt
 }
 
 export async function rebuildAnalysisReview(jobId: string): Promise<ReviewBuildStatusResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/analyses/${jobId}/review/rebuild`, {
+  const response = await apiFetch(`/api/v1/analyses/${jobId}/review/rebuild`, {
     method: "POST",
     cache: "no-store",
   });
@@ -127,7 +189,7 @@ export async function rebuildAnalysisReview(jobId: string): Promise<ReviewBuildS
 }
 
 export async function getAnalysisReviewFile(jobId: string, fileId: string): Promise<ReviewFilePayload> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/analyses/${jobId}/review/files/${fileId}`, {
+  const response = await apiFetch(`/api/v1/analyses/${jobId}/review/files/${fileId}`, {
     cache: "no-store",
   });
   const body = await parseResponse<ReviewFileResponse>(response);
@@ -142,7 +204,7 @@ export function resolveApiUrl(path: string): string {
 }
 
 export async function getExamples(): Promise<GoldenCaseExample[]> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/examples`, {
+  const response = await apiFetch("/api/v1/examples", {
     cache: "no-store",
   });
   const body = await parseResponse<ExamplesResponse>(response);
@@ -150,7 +212,7 @@ export async function getExamples(): Promise<GoldenCaseExample[]> {
 }
 
 export async function getJobs(): Promise<JobStatusResponse[]> {
-  const response = await fetch(`${API_BASE_URL}/api/v1/analyses`, {
+  const response = await apiFetch("/api/v1/analyses", {
     cache: "no-store",
   });
   const body = await parseResponse<JobsResponse>(response);

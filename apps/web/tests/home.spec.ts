@@ -87,7 +87,7 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
   await expect(page.locator(".review-v2-claim-card").first()).toBeVisible();
   await page.locator(".review-v2-claim-card").first().click();
   await expect(page.locator(".review-v2-claim-card").first()).toHaveClass(/active/);
-  const directoryNodes = page.locator(".file-tree-node.dir");
+  const directoryNodes = page.locator(".review-v2-tree-folder");
   if ((await directoryNodes.count()) > 0) {
     const firstDirectory = directoryNodes.first();
     const initialState = (await firstDirectory.getAttribute("aria-expanded")) ?? "false";
@@ -96,12 +96,28 @@ test("submits an analysis and renders mapped results", async ({ page }) => {
     await firstDirectory.click();
     await expect(firstDirectory).toHaveAttribute("aria-expanded", initialState);
   }
+  await page.getByRole("button", { name: "Expand all" }).click();
+  await expect(page.locator(".review-v2-tree-folder[aria-expanded='true']").first()).toBeVisible();
+  await page.getByRole("button", { name: "Collapse all" }).click();
+  if ((await directoryNodes.count()) > 0) {
+    await expect(directoryNodes.first()).toHaveAttribute("aria-expanded", "false");
+  }
+  await page.getByRole("button", { name: "Expand all" }).click();
   const fileNodes = page.locator(".review-v2-tree-file");
   await expect(fileNodes.first()).toBeVisible();
   if ((await fileNodes.count()) > 1) {
     await fileNodes.nth(1).click();
-    await expect(fileNodes.nth(1)).toHaveClass(/active/);
+    await expect(page.locator(".review-v2-tree-file.active").first()).toBeVisible();
   }
+  const treePane = page.locator(".review-v2-column-tree");
+  const treePaneBefore = await treePane.boundingBox();
+  await page.getByRole("button", { name: "Resize file tree and diff panes" }).press("ArrowRight");
+  const treePaneAfter = await treePane.boundingBox();
+  expect(treePaneBefore?.width).toBeTruthy();
+  expect(treePaneAfter?.width).toBeTruthy();
+  expect((treePaneAfter?.width ?? 0) > (treePaneBefore?.width ?? 0)).toBeTruthy();
+  await page.getByRole("button", { name: "source" }).click();
+  await expect(page.locator(".review-editor-frame .view-lines").first()).toBeVisible({ timeout: 15000 });
   await expect(page.getByRole("link", { name: "Back to shell" })).toBeVisible();
 });
 

@@ -1,4 +1,5 @@
 import "./globals.css";
+import "monaco-editor/min/vs/editor/editor.main.css";
 import "react-diff-view/style/index.css";
 
 import type { Metadata } from "next";

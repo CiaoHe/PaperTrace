@@ -1,4 +1,11 @@
-import type { ReviewClaimIndexEntry, ReviewFileEntry, ReviewManifest } from "@papertrace/contracts";
+import type {
+  ReviewClaimIndexEntry,
+  ReviewDiffType,
+  ReviewFileEntry,
+  ReviewManifest,
+  ReviewMatchType,
+  ReviewSemanticStatus,
+} from "@papertrace/contracts";
 
 export const REVIEW_BUCKET_ORDER = [
   { key: "primary", label: "Primary", emptyMessage: "No primary comparable files are ready for review." },
@@ -21,12 +28,20 @@ export interface ReviewBucketDescriptor {
 }
 
 export interface ReviewTreeNode {
+  id: string;
   name: string;
   path: string;
   isFile: boolean;
   fileId: string | null;
   changedCount: number;
-  children: ReviewTreeNode[];
+  fileCount: number;
+  linkedClaimCount: number;
+  language: string | null;
+  diffType: ReviewDiffType | null;
+  matchType: ReviewMatchType | null;
+  semanticStatus: ReviewSemanticStatus | null;
+  significance: string | null;
+  children: ReviewTreeNode[] | null;
 }
 
 export function reviewBuckets(manifest: ReviewManifest): ReviewBucketDescriptor[] {
@@ -68,22 +83,42 @@ export function buildReviewFileTree(files: ReviewFileEntry[]): ReviewTreeNode[] 
     const isFile = rest.length === 0;
     if (!node) {
       node = {
+        id: isFile ? entry.file_id : directoryNodeId(path),
         name: head,
         path,
         isFile,
         fileId: null,
         changedCount: 0,
-        children: [],
+        fileCount: 0,
+        linkedClaimCount: 0,
+        language: null,
+        diffType: null,
+        matchType: null,
+        semanticStatus: null,
+        significance: null,
+        children: isFile ? null : [],
       };
       nodes.push(node);
     }
     if (isFile) {
+      node.id = entry.file_id;
       node.fileId = entry.file_id;
       node.changedCount = Math.max(1, entry.stats?.changed_line_count ?? 0);
+      node.fileCount = 1;
+      node.linkedClaimCount = entry.linked_claim_count ?? 0;
+      node.language = entry.language;
+      node.diffType = entry.diff_type;
+      node.matchType = entry.match_type;
+      node.semanticStatus = entry.semantic_status;
+      node.significance = entry.significance;
       return;
     }
-    upsert(node.children, rest, entry, path);
-    node.changedCount = node.children.reduce((sum, child) => sum + child.changedCount, 0);
+    const children = node.children ?? [];
+    upsert(children, rest, entry, path);
+    node.children = children;
+    node.changedCount = children.reduce((sum, child) => sum + child.changedCount, 0);
+    node.fileCount = children.reduce((sum, child) => sum + child.fileCount, 0);
+    node.linkedClaimCount = children.reduce((sum, child) => sum + child.linkedClaimCount, 0);
   };
 
   for (const entry of files) {
@@ -107,6 +142,14 @@ export function ancestorPaths(filePath: string | null): Set<string> {
     expanded.add(parts.slice(0, index + 1).join("/"));
   }
   return expanded;
+}
+
+export function directoryNodeId(path: string): string {
+  return `dir:${path}`;
+}
+
+export function ancestorDirectoryNodeIds(filePath: string | null): string[] {
+  return [...ancestorPaths(filePath)].map((path) => directoryNodeId(path));
 }
 
 export function findFileById(manifest: ReviewManifest, fileId: string | null): ReviewFileEntry | null {
@@ -146,7 +189,7 @@ function sortTree(nodes: ReviewTreeNode[]): ReviewTreeNode[] {
   return [...nodes]
     .map((node) => ({
       ...node,
-      children: sortTree(node.children),
+      children: node.children ? sortTree(node.children) : null,
     }))
     .sort((left, right) => {
       if (left.isFile !== right.isFile) {

@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 
-const Editor = dynamic(async () => (await import("@monaco-editor/react")).Editor, {
+const Editor = dynamic(() => import("@monaco-editor/react").then((module) => module.Editor), {
   ssr: false,
 });
 

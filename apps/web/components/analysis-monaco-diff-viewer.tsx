@@ -3,7 +3,7 @@
 import type { DiffCluster, DiffCodeAnchor } from "@papertrace/contracts";
 import dynamic from "next/dynamic";
 
-const DiffEditor = dynamic(async () => (await import("@monaco-editor/react")).DiffEditor, {
+const DiffEditor = dynamic(() => import("@monaco-editor/react").then((module) => module.DiffEditor), {
   ssr: false,
 });
 
