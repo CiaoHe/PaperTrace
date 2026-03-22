@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -101,6 +102,16 @@ class AnalysisReviewSessionRecord(Base):
 
 _ENGINE: Engine | None = None
 _SESSION_FACTORY: sessionmaker[Session] | None = None
+
+
+@dataclass(frozen=True)
+class ReviewSessionSnapshot:
+    build_status: ReviewBuildStatus
+    build_phase: ReviewBuildPhase
+    refinement_status: ReviewRefinementStatus
+    artifact_dir: Path | None
+    build_error: str | None
+    rebuild_requested: bool
 
 
 def reset_storage_state() -> None:
@@ -388,6 +399,7 @@ def reset_review_session_for_rebuild(
         record.manifest_summary_json = {
             **(record.manifest_summary_json if isinstance(record.manifest_summary_json, dict) else {}),
             "detail": "Review rebuild queued.",
+            "rebuild_requested": True,
         }
         record.updated_at = datetime.now(UTC)
 
@@ -431,16 +443,7 @@ def mark_review_session_ready(job_id: str, *, manifest: ReviewManifest, artifact
         record.source_revision = manifest.source_revision
         record.current_revision = manifest.current_revision
         record.artifact_dir = str(artifact_dir.resolve())
-        record.manifest_summary_json = ReviewManifestSummary(
-            source_repo=manifest.source_repo,
-            current_repo=manifest.current_repo,
-            source_revision=manifest.source_revision,
-            current_revision=manifest.current_revision,
-            summary_counts=manifest.summary_counts,
-            artifact_version=manifest.artifact_version,
-            cache_key=manifest.cache_key,
-            refinement_status=manifest.refinement_status,
-        ).model_dump(mode="json")
+        record.manifest_summary_json = _build_review_manifest_summary(manifest)
         record.build_status = ReviewBuildStatus.READY.value
         record.build_phase = ReviewBuildPhase.DONE.value
         record.build_progress = 1.0
@@ -497,16 +500,7 @@ def update_review_manifest(job_id: str, manifest: ReviewManifest) -> None:
         record = _get_review_session_record(session, job_id)
         if record is None:
             raise ValueError(f"Review session not found: {job_id}")
-        record.manifest_summary_json = ReviewManifestSummary(
-            source_repo=manifest.source_repo,
-            current_repo=manifest.current_repo,
-            source_revision=manifest.source_revision,
-            current_revision=manifest.current_revision,
-            summary_counts=manifest.summary_counts,
-            artifact_version=manifest.artifact_version,
-            cache_key=manifest.cache_key,
-            refinement_status=manifest.refinement_status,
-        ).model_dump(mode="json")
+        record.manifest_summary_json = _build_review_manifest_summary(manifest)
         record.refinement_status = manifest.refinement_status.value
         record.updated_at = datetime.now(UTC)
 
@@ -618,6 +612,23 @@ def get_review_rendered_html(job_id: str, file_id: str) -> str | None:
         if not rendered_path.exists():
             return None
         return rendered_path.read_text(encoding="utf-8")
+
+
+def get_review_session_snapshot(job_id: str) -> ReviewSessionSnapshot | None:
+    with session_scope() as session:
+        record = _get_review_session_record(session, job_id)
+        if record is None:
+            return None
+        manifest_summary = record.manifest_summary_json if isinstance(record.manifest_summary_json, dict) else {}
+        artifact_dir = Path(record.artifact_dir) if record.artifact_dir else None
+        return ReviewSessionSnapshot(
+            build_status=ReviewBuildStatus(record.build_status),
+            build_phase=ReviewBuildPhase(record.build_phase),
+            refinement_status=ReviewRefinementStatus(record.refinement_status),
+            artifact_dir=artifact_dir,
+            build_error=record.build_error,
+            rebuild_requested=bool(manifest_summary.get("rebuild_requested")),
+        )
 
 
 def enrich_analysis_result_with_code_anchors(result: AnalysisResult, repo_url: str) -> AnalysisResult:
@@ -754,6 +765,21 @@ def _artifact_size_kb(artifact_dir: Path) -> int:
         if path.is_file():
             total_bytes += path.stat().st_size
     return total_bytes // 1024
+
+
+def _build_review_manifest_summary(manifest: ReviewManifest) -> dict[str, Any]:
+    return ReviewManifestSummary(
+        source_repo=manifest.source_repo,
+        current_repo=manifest.current_repo,
+        source_revision=manifest.source_revision,
+        current_revision=manifest.current_revision,
+        summary_counts=manifest.summary_counts,
+        primary_queue_count=len(manifest.review_queue),
+        secondary_bucket_counts={key: bucket.count for key, bucket in manifest.secondary_buckets.items()},
+        artifact_version=manifest.artifact_version,
+        cache_key=manifest.cache_key,
+        refinement_status=manifest.refinement_status,
+    ).model_dump(mode="json")
 
 
 def _sha256_short(value: str, *, length: int = 16) -> str:

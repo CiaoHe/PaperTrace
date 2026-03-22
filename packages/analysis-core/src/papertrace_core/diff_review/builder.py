@@ -46,6 +46,7 @@ from papertrace_core.storage import (
     ensure_review_session,
     get_job_result,
     get_job_summary,
+    get_review_session_snapshot,
     mark_review_session_building,
     mark_review_session_failed,
     mark_review_session_ready,
@@ -101,9 +102,11 @@ def build_review_artifact_for_job(job_id: str) -> ReviewManifest | None:
         current_revision=current_revision,
         artifact_dir=artifact_dir,
     )
+    review_session = get_review_session_snapshot(job_id)
+    force_rebuild = review_session.rebuild_requested if review_session is not None else False
 
     manifest_path = artifact_dir / "manifest.json"
-    if manifest_path.exists():
+    if manifest_path.exists() and not force_rebuild:
         manifest = ReviewManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
         mark_review_session_ready(job_id, manifest=manifest, artifact_dir=artifact_dir)
         return manifest
@@ -123,7 +126,7 @@ def build_review_artifact_for_job(job_id: str) -> ReviewManifest | None:
                 build_phase=ReviewBuildPhase.FILE_MAPPING,
             )
             return None
-        if manifest_path.exists():
+        if manifest_path.exists() and not force_rebuild:
             manifest = ReviewManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
             mark_review_session_ready(job_id, manifest=manifest, artifact_dir=artifact_dir)
             return manifest
@@ -159,9 +162,7 @@ def build_review_artifact_for_job(job_id: str) -> ReviewManifest | None:
                 ),
                 encoding="utf-8",
             )
-            if artifact_dir.exists():
-                shutil.rmtree(artifact_dir, ignore_errors=True)
-            temp_dir.rename(artifact_dir)
+            _swap_artifact_directory(temp_dir, artifact_dir)
             mark_review_session_ready(job_id, manifest=manifest, artifact_dir=artifact_dir)
             return manifest
         except Exception as exc:
@@ -556,3 +557,18 @@ def _read_review_file_content(root: Path, relative_path: str | None) -> str | No
     if not file_path.exists():
         return None
     return file_path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _swap_artifact_directory(temp_dir: Path, artifact_dir: Path) -> None:
+    backup_dir = artifact_dir.parent / f"{artifact_dir.name}.bak.{uuid4().hex}"
+    try:
+        if artifact_dir.exists():
+            artifact_dir.rename(backup_dir)
+        temp_dir.rename(artifact_dir)
+    except Exception:
+        if backup_dir.exists() and not artifact_dir.exists():
+            backup_dir.rename(artifact_dir)
+        raise
+    finally:
+        if backup_dir.exists():
+            shutil.rmtree(backup_dir, ignore_errors=True)

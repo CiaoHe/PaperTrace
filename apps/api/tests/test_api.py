@@ -21,14 +21,19 @@ get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)
-def reset_db() -> Generator[None, None, None]:
+def reset_db(tmp_path_factory: pytest.TempPathFactory) -> Generator[None, None, None]:
+    test_db_path = tmp_path_factory.mktemp("api-db") / "test.db"
+    os.environ["CELERY_TASK_ALWAYS_EAGER"] = "true"
+    os.environ["DATABASE_URL"] = f"sqlite+pysqlite:///{test_db_path}"
+    os.environ["ENABLE_LIVE_BY_DEFAULT"] = "false"
     get_settings.cache_clear()
     reset_storage_state()
-    TEST_DB_PATH.unlink(missing_ok=True)
     yield
+    os.environ["CELERY_TASK_ALWAYS_EAGER"] = "true"
+    os.environ["DATABASE_URL"] = f"sqlite+pysqlite:///{test_db_path}"
+    os.environ["ENABLE_LIVE_BY_DEFAULT"] = "false"
     get_settings.cache_clear()
     reset_storage_state()
-    TEST_DB_PATH.unlink(missing_ok=True)
 
 
 def build_pdf_bytes(title: str, body: str) -> bytes:

@@ -19,6 +19,7 @@ os.environ["REVIEW_ARTIFACT_BASE_DIR"] = str(TEST_ARTIFACT_PATH)
 os.environ["ENABLE_LIVE_BY_DEFAULT"] = "false"
 
 from papertrace_api.main import app  # noqa: E402
+from papertrace_core.diff_review.models import ReviewBuildPhase  # noqa: E402
 from papertrace_core.models import (  # noqa: E402
     AnalysisRequest,
     AnalysisResult,
@@ -35,9 +36,11 @@ from papertrace_core.models import (  # noqa: E402
 from papertrace_core.settings import get_settings  # noqa: E402
 from papertrace_core.storage import (  # noqa: E402
     create_job,
+    ensure_review_session,
     get_review_artifact_dir,
     get_review_manifest,
     init_db,
+    mark_review_session_building,
     reset_storage_state,
     update_job_status,
 )
@@ -60,25 +63,33 @@ def init_git_repo(root: Path, files: dict[str, str]) -> None:
 
 
 @pytest.fixture(autouse=True)
-def reset_review_db() -> Generator[None, None, None]:
+def reset_review_db(tmp_path_factory: pytest.TempPathFactory) -> Generator[None, None, None]:
+    test_db_path = tmp_path_factory.mktemp("review-api-db") / "test.db"
+    test_artifact_path = tmp_path_factory.mktemp("review-cache")
+    os.environ["CELERY_TASK_ALWAYS_EAGER"] = "true"
+    os.environ["DATABASE_URL"] = f"sqlite+pysqlite:///{test_db_path}"
+    os.environ["REVIEW_ARTIFACT_BASE_DIR"] = str(test_artifact_path)
+    os.environ["ENABLE_LIVE_BY_DEFAULT"] = "false"
     get_settings.cache_clear()
     reset_storage_state()
     os.environ["LLM_BASE_URL"] = ""
     os.environ["LLM_MODEL"] = ""
     os.environ["LLM_API_KEY"] = ""
-    TEST_DB_PATH.unlink(missing_ok=True)
-    if TEST_ARTIFACT_PATH.exists():
+    if test_artifact_path.exists():
         import shutil
 
-        shutil.rmtree(TEST_ARTIFACT_PATH, ignore_errors=True)
+        shutil.rmtree(test_artifact_path, ignore_errors=True)
     yield
+    os.environ["CELERY_TASK_ALWAYS_EAGER"] = "true"
+    os.environ["DATABASE_URL"] = f"sqlite+pysqlite:///{test_db_path}"
+    os.environ["REVIEW_ARTIFACT_BASE_DIR"] = str(test_artifact_path)
+    os.environ["ENABLE_LIVE_BY_DEFAULT"] = "false"
     get_settings.cache_clear()
     reset_storage_state()
-    TEST_DB_PATH.unlink(missing_ok=True)
-    if TEST_ARTIFACT_PATH.exists():
+    if test_artifact_path.exists():
         import shutil
 
-        shutil.rmtree(TEST_ARTIFACT_PATH, ignore_errors=True)
+        shutil.rmtree(test_artifact_path, ignore_errors=True)
 
 
 def make_result(source_repo: str) -> AnalysisResult:
@@ -520,6 +531,45 @@ def test_review_endpoint_returns_202_when_build_lock_is_held(
     assert response.json()["build_phase"] == "file_mapping"
 
 
+def test_review_endpoint_does_not_reenqueue_while_build_is_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    current_root = tmp_path / "current"
+    init_git_repo(source_root, {"src/model.py": "def forward(x):\n    return x + 1\n"})
+    init_git_repo(current_root, {"src/model.py": "def forward(x):\n    return x + 2\n"})
+
+    init_db()
+    job_id = seed_succeeded_job(source_root, current_root, "paper://review-running")
+    ensure_review_session(job_id, paper_source="paper://review-running", current_repo_url=str(current_root))
+    mark_review_session_building(
+        job_id,
+        build_phase=ReviewBuildPhase.DIFF_GENERATION,
+        build_progress=0.5,
+        files_total=10,
+        files_done=5,
+        current_file="src/model.py",
+        detail="Generating diff for src/model.py.",
+    )
+
+    queued: list[str] = []
+    monkeypatch.setattr(
+        "papertrace_worker.tasks.build_review_artifact.delay",
+        lambda queued_job_id: queued.append(queued_job_id),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(f"/api/v1/analyses/{job_id}/review")
+
+    assert response.status_code == 202
+    assert response.json()["build_status"] == "building"
+    assert response.json()["build_phase"] == "diff_generation"
+    assert response.json()["files_done"] == 5
+    assert response.json()["current_file"] == "src/model.py"
+    assert queued == []
+
+
 def test_review_cache_hit_reuses_existing_manifest(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -607,3 +657,32 @@ def test_review_endpoint_reenqueues_when_ready_manifest_is_missing(
     assert response.status_code == 202
     assert response.json()["build_status"] == "pending"
     assert queued == [job_id]
+
+
+def test_review_rebuild_forces_a_fresh_manifest_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    current_root = tmp_path / "current"
+    init_git_repo(source_root, {"src/model.py": "def forward(x):\n    return x + 1\n"})
+    init_git_repo(current_root, {"src/model.py": "def forward(x):\n    return x + 2\n"})
+
+    init_db()
+    job_id = seed_succeeded_job(source_root, current_root, "paper://review-force-rebuild")
+
+    with TestClient(app) as client:
+        first_response = client.get(f"/api/v1/analyses/{job_id}/review")
+
+    assert first_response.status_code == 200
+
+    monkeypatch.setattr(
+        "papertrace_core.diff_review.builder._build_manifest",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("forced rebuild executed")),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(f"/api/v1/analyses/{job_id}/review/rebuild")
+
+    assert response.status_code == 409
+    assert "forced rebuild executed" in response.json()["build_error"]

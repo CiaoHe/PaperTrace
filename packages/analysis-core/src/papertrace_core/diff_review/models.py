@@ -214,6 +214,8 @@ class ReviewManifestSummary(BaseModel):
     source_revision: str
     current_revision: str
     summary_counts: ReviewSummaryCounts
+    primary_queue_count: int = 0
+    secondary_bucket_counts: dict[str, int] = Field(default_factory=dict)
     artifact_version: str
     cache_key: str
     refinement_status: ReviewRefinementStatus

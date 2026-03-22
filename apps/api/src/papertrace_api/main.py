@@ -8,9 +8,9 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from papertrace_core.cases import example_payloads
-from papertrace_core.diff_review.models import ReviewRefinementStatus
+from papertrace_core.diff_review.models import ReviewBuildPhase, ReviewBuildStatus, ReviewRefinementStatus
 from papertrace_core.inputs import normalize_paper_source, normalize_repo_url
-from papertrace_core.models import AnalysisRequest, HealthResponse, PaperSourceKind
+from papertrace_core.models import AnalysisRequest, HealthResponse, JobStatus, PaperSourceKind
 from papertrace_core.settings import get_settings
 from papertrace_core.storage import (
     create_job,
@@ -22,12 +22,13 @@ from papertrace_core.storage import (
     get_review_file_payload,
     get_review_manifest,
     get_review_rendered_html,
+    get_review_session_snapshot,
     get_review_status,
     init_db,
     list_jobs,
     reset_review_session_for_rebuild,
 )
-from papertrace_worker.tasks import build_review_artifact, enqueue_analysis
+from papertrace_worker.tasks import build_review_artifact, dispatch_task, enqueue_analysis
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
@@ -268,8 +269,12 @@ async def create_analysis(
         if reusable_job is not None:
             return CreateAnalysisResponse(job=reusable_job)
     job = create_job(analysis_request)
-    enqueue_analysis.delay(job.id, analysis_request.model_dump(mode="json"))
+    dispatch_task(enqueue_analysis, job.id, analysis_request.model_dump(mode="json"))
     summary = get_job_summary(job.id)
+    settings = get_settings()
+    if summary is not None and settings.celery_task_always_eager and summary.status == JobStatus.QUEUED:
+        enqueue_analysis.run(job.id, analysis_request.model_dump(mode="json"))
+        summary = get_job_summary(job.id)
     if summary is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -320,18 +325,40 @@ def get_analysis_review(job_id: str) -> ReviewManifestResponse | JSONResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Analysis job not found")
     if summary.status.value == "failed" or isinstance(review_status, ReviewUnavailableResponse):
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=review_status.model_dump(mode="json"))
+    session_snapshot = get_review_session_snapshot(job_id)
+    should_enqueue = False
 
-    ensure_review_session(job_id, paper_source=summary.paper_source, current_repo_url=summary.repo_url)
-    build_review_artifact.delay(job_id)
-    manifest = get_review_manifest(job_id)
-    if manifest is not None:
-        return ReviewManifestResponse(review=manifest)
-    refreshed_status = get_review_status(job_id)
-    if refreshed_status is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review status not found")
-    if isinstance(refreshed_status, ReviewUnavailableResponse):
-        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=refreshed_status.model_dump(mode="json"))
-    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=refreshed_status.model_dump(mode="json"))
+    if summary.status.value == "succeeded":
+        if session_snapshot is None:
+            ensure_review_session(job_id, paper_source=summary.paper_source, current_repo_url=summary.repo_url)
+            should_enqueue = True
+        elif session_snapshot.build_status == ReviewBuildStatus.READY:
+            ensure_review_session(
+                job_id,
+                paper_source=summary.paper_source,
+                current_repo_url=summary.repo_url,
+                build_status=ReviewBuildStatus.PENDING,
+                build_phase=ReviewBuildPhase.WAITING_FOR_ANALYSIS,
+            )
+            should_enqueue = True
+        elif (
+            session_snapshot.build_status == ReviewBuildStatus.PENDING
+            and session_snapshot.build_phase == ReviewBuildPhase.WAITING_FOR_ANALYSIS
+        ):
+            should_enqueue = True
+
+    if should_enqueue:
+        dispatch_task(build_review_artifact, job_id)
+        manifest = get_review_manifest(job_id)
+        if manifest is not None:
+            return ReviewManifestResponse(review=manifest)
+        review_status = get_review_status(job_id)
+        if review_status is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review status not found")
+        if isinstance(review_status, ReviewUnavailableResponse):
+            return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=review_status.model_dump(mode="json"))
+
+    return JSONResponse(status_code=status.HTTP_202_ACCEPTED, content=review_status.model_dump(mode="json"))
 
 
 @app.post(
@@ -362,7 +389,7 @@ def rebuild_analysis_review(job_id: str) -> Response:
             else ReviewRefinementStatus.DISABLED
         ),
     )
-    build_review_artifact.delay(job_id)
+    dispatch_task(build_review_artifact, job_id)
     refreshed_status = get_review_status(job_id)
     if refreshed_status is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Review status not found")
